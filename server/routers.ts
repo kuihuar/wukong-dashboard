@@ -322,6 +322,55 @@ export const appRouter = router({
         await db.removeProjectMember(input.projectId, input.userId);
         return { success: true, message: "Member removed successfully" };
       }),
+
+    // Get projects for current user with their role
+    myProjects: protectedProcedure.query(async ({ ctx }) => {
+      const projects = await db.getUserProjectsWithRole(ctx.user.id);
+      return projects;
+    }),
+
+    // Get or create default project for current user
+    getDefault: protectedProcedure.query(async ({ ctx }) => {
+      const project = await db.ensureUserHasDefaultProject(ctx.user.id, ctx.user.name);
+      return project;
+    }),
+
+    // Check if user can access a project
+    checkAccess: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(async ({ input, ctx }) => {
+        const canAccess = await db.canUserAccessProject(ctx.user.id, input.projectId);
+        const canManage = await db.canUserManageProject(ctx.user.id, input.projectId);
+        const role = await db.getUserRoleInProject(ctx.user.id, input.projectId);
+        return { canAccess, canManage, role };
+      }),
+
+    // Update member role
+    updateMemberRole: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        userId: z.number(),
+        role: z.enum(["admin", "member", "viewer"]),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        // Check if current user can manage this project
+        const canManage = await db.canUserManageProject(ctx.user.id, input.projectId);
+        if (!canManage) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You don't have permission to manage this project" });
+        }
+        await db.updateProjectMemberRole(input.projectId, input.userId, input.role);
+        return { success: true, message: "Member role updated successfully" };
+      }),
+
+    // Get all users (for adding members)
+    allUsers: protectedProcedure.query(async () => {
+      const users = await db.getAllUsers();
+      return users.map(u => ({
+        id: u.id,
+        name: u.name,
+        email: u.email,
+      }));
+    }),
   }),
 
   // ==================== Quota Management ====================

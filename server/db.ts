@@ -503,3 +503,171 @@ export async function checkQuotaForSnapshot(projectId: number): Promise<QuotaChe
     limit: limits,
   };
 }
+
+
+// ==================== User-Project Association Queries ====================
+
+type ProjectRole = 'owner' | 'admin' | 'member' | 'viewer';
+
+export type ProjectWithRole = {
+  id: number;
+  name: string;
+  description: string | null;
+  namespace: string;
+  ownerId: number;
+  isDefault: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  userRole: ProjectRole;
+};
+
+export async function getUserProjectsWithRole(userId: number): Promise<ProjectWithRole[]> {
+  const db = await getDb();
+  if (!db) return [];
+  
+  // Get projects where user is owner
+  const ownedProjects = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.ownerId, userId));
+  
+  const ownedWithRole: ProjectWithRole[] = ownedProjects.map(p => ({
+    ...p,
+    userRole: 'owner' as ProjectRole,
+  }));
+  
+  // Get projects where user is member
+  const memberRecords = await db
+    .select({ project: projects, role: projectMembers.role })
+    .from(projectMembers)
+    .innerJoin(projects, eq(projectMembers.projectId, projects.id))
+    .where(eq(projectMembers.userId, userId));
+  
+  const memberWithRole: ProjectWithRole[] = memberRecords.map(m => ({
+    ...m.project,
+    userRole: m.role as ProjectRole,
+  }));
+  
+  // Combine and deduplicate (owner takes precedence)
+  const allProjects: ProjectWithRole[] = [...ownedWithRole];
+  for (const mp of memberWithRole) {
+    if (!allProjects.find(p => p.id === mp.id)) {
+      allProjects.push(mp);
+    }
+  }
+  
+  return allProjects;
+}
+
+export async function getDefaultProjectForUser(userId: number): Promise<ProjectWithRole | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  
+  // First try to find user's default project
+  const userProjects = await getUserProjectsWithRole(userId);
+  
+  // Return the first owned project, or first project with admin role, or first project
+  const owned = userProjects.find(p => p.userRole === 'owner');
+  if (owned) return owned;
+  
+  const admin = userProjects.find(p => p.userRole === 'admin');
+  if (admin) return admin;
+  
+  return userProjects[0];
+}
+
+export async function ensureUserHasDefaultProject(userId: number, userName?: string | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  // Check if user already has projects
+  const existingProjects = await getUserProjectsWithRole(userId);
+  if (existingProjects.length > 0) {
+    return existingProjects[0];
+  }
+  
+  // Create a default project for the user
+  const projectName = userName ? `${userName}'s Project` : `Project ${userId}`;
+  const namespace = `wukong-user-${userId}`;
+  
+  const projectId = await createProject({
+    name: projectName,
+    description: 'Default project',
+    namespace,
+    ownerId: userId,
+    isDefault: true,
+  });
+  
+  // Create default quota for the project
+  await createResourceQuota({
+    projectId,
+    maxVMs: 5,
+    maxCPU: 16,
+    maxMemoryGB: 32,
+    maxStorageGB: 200,
+    maxGPUs: 0,
+    maxSnapshots: 10,
+    enabled: true,
+  });
+  
+  // Create initial usage record
+  await createResourceUsage({
+    projectId,
+    usedVMs: 0,
+    usedCPU: 0,
+    usedMemoryGB: 0,
+    usedStorageGB: 0,
+    usedGPUs: 0,
+    usedSnapshots: 0,
+  });
+  
+  const project = await getProjectById(projectId);
+  return project ? { ...project, userRole: 'owner' as const } : undefined;
+}
+
+export async function getUserRoleInProject(userId: number, projectId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  
+  // Check if user is owner
+  const project = await getProjectById(projectId);
+  if (project?.ownerId === userId) {
+    return 'owner';
+  }
+  
+  // Check membership
+  const membership = await db
+    .select()
+    .from(projectMembers)
+    .where(and(eq(projectMembers.projectId, projectId), eq(projectMembers.userId, userId)))
+    .limit(1);
+  
+  return membership.length > 0 ? membership[0].role : undefined;
+}
+
+export async function canUserAccessProject(userId: number, projectId: number) {
+  const role = await getUserRoleInProject(userId, projectId);
+  return role !== undefined;
+}
+
+export async function canUserManageProject(userId: number, projectId: number) {
+  const role = await getUserRoleInProject(userId, projectId);
+  return role === 'owner' || role === 'admin';
+}
+
+export async function updateProjectMemberRole(projectId: number, userId: number, role: 'admin' | 'member' | 'viewer') {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  await db
+    .update(projectMembers)
+    .set({ role })
+    .where(and(eq(projectMembers.projectId, projectId), eq(projectMembers.userId, userId)));
+}
+
+export async function getAllUsers() {
+  const db = await getDb();
+  if (!db) return [];
+  
+  return await db.select().from(users);
+}

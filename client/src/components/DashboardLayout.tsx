@@ -21,7 +21,8 @@ import {
 } from "@/components/ui/sidebar";
 import { getLoginUrl } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
-import { Server, LayoutDashboard, LogOut, PanelLeft, Camera, Plus, Gauge } from "lucide-react";
+import { Server, LayoutDashboard, LogOut, PanelLeft, Camera, Plus, Gauge, FolderKanban } from "lucide-react";
+import { ProjectSelector } from "./ProjectSelector";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
@@ -32,6 +33,7 @@ const menuItems = [
   { icon: Server, label: "Virtual Machines", path: "/vms" },
   { icon: Camera, label: "Snapshots", path: "/snapshots" },
   { icon: Gauge, label: "Resource Quotas", path: "/quotas" },
+  { icon: FolderKanban, label: "Projects", path: "/projects" },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
@@ -164,22 +166,29 @@ function DashboardLayoutContent({
           className="border-r border-sidebar-border"
           disableTransition={isResizing}
         >
-          <SidebarHeader className="h-16 justify-center border-b border-sidebar-border">
-            <div className="flex items-center gap-3 px-2 transition-all w-full">
-              <button
-                onClick={toggleSidebar}
-                className="h-9 w-9 flex items-center justify-center hover:bg-sidebar-accent rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
-                aria-label="Toggle navigation"
-              >
-                <PanelLeft className="h-4 w-4 text-sidebar-foreground/70" />
-              </button>
-              {!isCollapsed ? (
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="font-semibold tracking-tight truncate text-sidebar-foreground">
-                    Wukong
-                  </span>
+          <SidebarHeader className="border-b border-sidebar-border py-3">
+            <div className="flex flex-col gap-2 px-2 transition-all w-full">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={toggleSidebar}
+                  className="h-9 w-9 flex items-center justify-center hover:bg-sidebar-accent rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
+                  aria-label="Toggle navigation"
+                >
+                  <PanelLeft className="h-4 w-4 text-sidebar-foreground/70" />
+                </button>
+                {!isCollapsed ? (
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-semibold tracking-tight truncate text-sidebar-foreground">
+                      Wukong
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+              {!isCollapsed && (
+                <div className="px-1">
+                  <ProjectSelector compact />
                 </div>
-              ) : null}
+              )}
             </div>
           </SidebarHeader>
 
