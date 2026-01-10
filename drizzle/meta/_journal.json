@@ -15,6 +15,13 @@
       "when": 1768032852605,
       "tag": "0001_numerous_chimera",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1768059160399,
+      "tag": "0002_light_mandroid",
+      "breakpoints": true
     }
   ]
 }

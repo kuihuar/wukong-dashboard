@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, gt, gte, lte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { 
   InsertUser, 
@@ -8,6 +8,11 @@ import {
   resourceQuotas, 
   resourceUsage,
   quotaTemplates,
+  userMfaSettings,
+  userSessions,
+  userOidcIdentities,
+  oidcProviders,
+  auditLogs,
   InsertProject,
   InsertResourceQuota,
   InsertResourceUsage,
@@ -671,3 +676,293 @@ export async function getAllUsers() {
   
   return await db.select().from(users);
 }
+
+
+// ==================== OIDC Functions ====================
+
+export async function getEnabledOidcProviders() {
+  const db = await getDb();
+  if (!db) return [];
+  
+  const { oidcProviders } = await import("../drizzle/schema");
+  return await db
+    .select()
+    .from(oidcProviders)
+    .where(eq(oidcProviders.enabled, true));
+}
+
+export async function upsertUserFromOidc(data: {
+  subject: string;
+  providerId: string;
+  email: string | null;
+  name: string | null;
+  claims: Record<string, unknown>;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  const { userOidcIdentities } = await import("../drizzle/schema");
+  
+  // Find or create user
+  let user = await db
+    .select()
+    .from(users)
+    .where(eq(users.email, data.email || ""))
+    .limit(1)
+    .then(r => r[0]);
+
+  if (!user && data.email) {
+    const result = await db.insert(users).values({
+      openId: `oidc-${data.providerId}-${data.subject}`,
+      email: data.email,
+      name: data.name,
+      loginMethod: `oidc-${data.providerId}`,
+    });
+    
+    user = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, data.email))
+      .limit(1)
+      .then(r => r[0]);
+  }
+
+  if (!user) {
+    throw new Error("Failed to create user from OIDC");
+  }
+
+  // Create or update OIDC identity
+  const existingIdentity = await db
+    .select()
+    .from(userOidcIdentities)
+    .where(and(
+      eq(userOidcIdentities.userId, user.id),
+      eq(userOidcIdentities.subject, data.subject)
+    ))
+    .limit(1)
+    .then(r => r[0]);
+
+  if (existingIdentity) {
+    await db
+      .update(userOidcIdentities)
+      .set({ claims: data.claims })
+      .where(eq(userOidcIdentities.id, existingIdentity.id));
+  } else {
+    await db.insert(userOidcIdentities).values({
+      userId: user.id,
+      providerId: parseInt(data.providerId),
+      subject: data.subject,
+      claims: data.claims,
+    });
+  }
+
+  return user;
+}
+
+// ==================== MFA Functions ====================
+
+export async function getUserMfaSettings(userId: number) {
+  const db = await getDb();
+  if (!db) return null;
+  
+  const { userMfaSettings } = await import("../drizzle/schema");
+  return await db
+    .select()
+    .from(userMfaSettings)
+    .where(eq(userMfaSettings.userId, userId))
+    .limit(1)
+    .then(r => r[0] || null);
+}
+
+export async function createUserMfaSettings(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  const { userMfaSettings } = await import("../drizzle/schema");
+  await db.insert(userMfaSettings).values({
+    userId,
+    totpEnabled: false,
+    backupCodesGenerated: false,
+  });
+}
+
+export async function updateUserMfaSettings(userId: number, data: {
+  totpSecret?: string;
+  totpEnabled?: boolean;
+  backupCodes?: string[];
+  backupCodesGenerated?: boolean;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  const { userMfaSettings } = await import("../drizzle/schema");
+  const updateData: any = {};
+  
+  if (data.totpSecret !== undefined) updateData.totpSecret = data.totpSecret;
+  if (data.totpEnabled !== undefined) updateData.totpEnabled = data.totpEnabled;
+  if (data.backupCodes !== undefined) updateData.backupCodes = data.backupCodes;
+  if (data.backupCodesGenerated !== undefined) updateData.backupCodesGenerated = data.backupCodesGenerated;
+  
+  await db
+    .update(userMfaSettings)
+    .set(updateData)
+    .where(eq(userMfaSettings.userId, userId));
+}
+
+// ==================== Session Functions ====================
+
+export async function createUserSession(userId: number, data: {
+  sessionToken: string;
+  deviceName?: string;
+  userAgent?: string;
+  ipAddress?: string;
+  expiresAt: Date;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  const { userSessions } = await import("../drizzle/schema");
+  const result = await db.insert(userSessions).values({
+    userId,
+    sessionToken: data.sessionToken,
+    deviceName: data.deviceName,
+    userAgent: data.userAgent,
+    ipAddress: data.ipAddress,
+    expiresAt: data.expiresAt,
+    isActive: true,
+  });
+  
+  return result;
+}
+
+export async function getUserSessions(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  
+  const { userSessions } = await import("../drizzle/schema");
+  return await db
+    .select()
+    .from(userSessions)
+    .where(and(
+      eq(userSessions.userId, userId),
+      eq(userSessions.isActive, true),
+      gt(userSessions.expiresAt, new Date())
+    ));
+}
+
+export async function getSessionByToken(sessionToken: string) {
+  const db = await getDb();
+  if (!db) return null;
+  
+  const { userSessions } = await import("../drizzle/schema");
+  return await db
+    .select()
+    .from(userSessions)
+    .where(and(
+      eq(userSessions.sessionToken, sessionToken),
+      eq(userSessions.isActive, true),
+      gt(userSessions.expiresAt, new Date())
+    ))
+    .limit(1)
+    .then(r => r[0] || null);
+}
+
+export async function updateSessionActivity(sessionId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  const { userSessions } = await import("../drizzle/schema");
+  await db
+    .update(userSessions)
+    .set({ lastActivityAt: new Date() })
+    .where(eq(userSessions.id, sessionId));
+}
+
+export async function revokeSession(sessionId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  const { userSessions } = await import("../drizzle/schema");
+  await db
+    .update(userSessions)
+    .set({ isActive: false })
+    .where(eq(userSessions.id, sessionId));
+}
+
+export async function revokeAllUserSessions(userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  const { userSessions } = await import("../drizzle/schema");
+  await db
+    .update(userSessions)
+    .set({ isActive: false })
+    .where(eq(userSessions.userId, userId));
+}
+
+// ==================== Audit Log Functions ====================
+
+export async function createAuditLog(data: {
+  userId?: number;
+  eventType: string;
+  description?: string;
+  ipAddress?: string;
+  userAgent?: string;
+  metadata?: Record<string, unknown>;
+  severity?: "info" | "warning" | "error";
+}) {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot create audit log: database not available");
+    return;
+  }
+  
+  const { auditLogs } = await import("../drizzle/schema");
+  await db.insert(auditLogs).values({
+    userId: data.userId,
+    eventType: data.eventType,
+    description: data.description,
+    ipAddress: data.ipAddress,
+    userAgent: data.userAgent,
+    metadata: data.metadata,
+    severity: data.severity || "info",
+  });
+}
+
+export async function getAuditLogs(filters?: {
+  userId?: number;
+  eventType?: string;
+  severity?: string;
+  startDate?: Date;
+  endDate?: Date;
+  limit?: number;
+  offset?: number;
+}) {
+  const db = await getDb();
+  if (!db) return [];
+  
+  try {
+    let query = db.select().from(auditLogs);
+    
+    const conditions: any[] = [];
+    if (filters?.userId) conditions.push(eq(auditLogs.userId, filters.userId));
+    if (filters?.eventType) conditions.push(eq(auditLogs.eventType, filters.eventType));
+    if (filters?.severity) conditions.push(eq(auditLogs.severity as any, filters.severity));
+    if (filters?.startDate) conditions.push(gte(auditLogs.createdAt, filters.startDate));
+    if (filters?.endDate) conditions.push(lte(auditLogs.createdAt, filters.endDate));
+    
+    if (conditions.length > 0) {
+      query = query.where(and(...conditions) as any) as any;
+    }
+    
+    const limit = filters?.limit || 100;
+    const offset = filters?.offset || 0;
+    
+    return await (query.limit(limit).offset(offset) as any);
+  } catch (error) {
+    console.error("[Database] Error fetching audit logs:", error);
+    return [];
+  }
+}
+
+

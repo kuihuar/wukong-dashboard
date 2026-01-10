@@ -1,4 +1,4 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, boolean } from "drizzle-orm/mysql-core";
+import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, boolean, json, bigint } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -133,3 +133,134 @@ export const quotaTemplates = mysqlTable("quota_templates", {
 
 export type QuotaTemplate = typeof quotaTemplates.$inferSelect;
 export type InsertQuotaTemplate = typeof quotaTemplates.$inferInsert;
+
+/**
+ * MFA (Multi-Factor Authentication) settings per user.
+ * Stores TOTP secrets and backup codes for 2FA.
+ */
+export const userMfaSettings = mysqlTable("user_mfa_settings", {
+  id: int("id").autoincrement().primaryKey(),
+  /** User ID */
+  userId: int("userId").notNull().unique(),
+  /** TOTP secret (encrypted) */
+  totpSecret: varchar("totpSecret", { length: 255 }),
+  /** Whether TOTP is enabled */
+  totpEnabled: boolean("totpEnabled").default(false).notNull(),
+  /** Backup codes (JSON array, encrypted) */
+  backupCodes: json("backupCodes"),
+  /** Whether backup codes have been generated */
+  backupCodesGenerated: boolean("backupCodesGenerated").default(false).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type UserMfaSettings = typeof userMfaSettings.$inferSelect;
+export type InsertUserMfaSettings = typeof userMfaSettings.$inferInsert;
+
+/**
+ * User sessions for session management.
+ * Tracks active sessions and device information.
+ */
+export const userSessions = mysqlTable("user_sessions", {
+  id: int("id").autoincrement().primaryKey(),
+  /** User ID */
+  userId: int("userId").notNull(),
+  /** Session token (hashed) */
+  sessionToken: varchar("sessionToken", { length: 255 }).notNull().unique(),
+  /** Device name/description */
+  deviceName: varchar("deviceName", { length: 128 }),
+  /** User agent */
+  userAgent: text("userAgent"),
+  /** IP address */
+  ipAddress: varchar("ipAddress", { length: 45 }),
+  /** Last activity timestamp */
+  lastActivityAt: timestamp("lastActivityAt").defaultNow().notNull(),
+  /** Session expiry timestamp */
+  expiresAt: timestamp("expiresAt").notNull(),
+  /** Whether session is active */
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type UserSession = typeof userSessions.$inferSelect;
+export type InsertUserSession = typeof userSessions.$inferInsert;
+
+/**
+ * OIDC provider configuration.
+ * Stores configuration for different OIDC providers (e.g., Azure AD, Google, Okta).
+ */
+export const oidcProviders = mysqlTable("oidc_providers", {
+  id: int("id").autoincrement().primaryKey(),
+  /** Provider name (e.g., 'azure-ad', 'google', 'okta') */
+  name: varchar("name", { length: 64 }).notNull().unique(),
+  /** Display name */
+  displayName: varchar("displayName", { length: 128 }).notNull(),
+  /** OIDC discovery URL */
+  discoveryUrl: text("discoveryUrl").notNull(),
+  /** Client ID */
+  clientId: varchar("clientId", { length: 255 }).notNull(),
+  /** Client secret (encrypted) */
+  clientSecret: varchar("clientSecret", { length: 255 }).notNull(),
+  /** Redirect URI */
+  redirectUri: text("redirectUri").notNull(),
+  /** Scopes to request */
+  scopes: varchar("scopes", { length: 512 }).default("openid profile email").notNull(),
+  /** Whether this provider is enabled */
+  enabled: boolean("enabled").default(true).notNull(),
+  /** Whether this is the default provider */
+  isDefault: boolean("isDefault").default(false).notNull(),
+  /** Additional configuration (JSON) */
+  config: json("config"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type OidcProvider = typeof oidcProviders.$inferSelect;
+export type InsertOidcProvider = typeof oidcProviders.$inferInsert;
+
+/**
+ * User OIDC identities.
+ * Maps users to their OIDC provider identities.
+ */
+export const userOidcIdentities = mysqlTable("user_oidc_identities", {
+  id: int("id").autoincrement().primaryKey(),
+  /** User ID */
+  userId: int("userId").notNull(),
+  /** OIDC provider ID */
+  providerId: int("providerId").notNull(),
+  /** Subject (sub) claim from OIDC provider */
+  subject: varchar("subject", { length: 255 }).notNull(),
+  /** Additional claims (JSON) */
+  claims: json("claims"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type UserOidcIdentity = typeof userOidcIdentities.$inferSelect;
+export type InsertUserOidcIdentity = typeof userOidcIdentities.$inferInsert;
+
+/**
+ * Audit logs for security and compliance.
+ * Tracks important security events like login, MFA changes, etc.
+ */
+export const auditLogs = mysqlTable("audit_logs", {
+  id: bigint("id", { mode: "bigint" }).autoincrement().primaryKey(),
+  /** User ID (nullable for system events) */
+  userId: int("userId"),
+  /** Event type (e.g., 'login', 'mfa_enabled', 'session_created') */
+  eventType: varchar("eventType", { length: 64 }).notNull(),
+  /** Event description */
+  description: text("description"),
+  /** IP address */
+  ipAddress: varchar("ipAddress", { length: 45 }),
+  /** User agent */
+  userAgent: text("userAgent"),
+  /** Event metadata (JSON) */
+  metadata: json("metadata"),
+  /** Severity level (info, warning, error) */
+  severity: mysqlEnum("severity", ["info", "warning", "error"]).default("info").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type AuditLog = typeof auditLogs.$inferSelect;
+export type InsertAuditLog = typeof auditLogs.$inferInsert;
