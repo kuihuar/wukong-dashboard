@@ -9,7 +9,7 @@ import VMList from "./pages/VMList";
 import VMDetail from "./pages/VMDetail";
 import VMCreate from "./pages/VMCreate";
 import Snapshots from "./pages/Snapshots";
-import DashboardLayout from "./components/DashboardLayout";
+import QuotaManagement from "./pages/QuotaManagement";
 
 function Router() {
   return (
@@ -19,6 +19,7 @@ function Router() {
       <Route path="/vms/create" component={VMCreate} />
       <Route path="/vms/:id" component={VMDetail} />
       <Route path="/snapshots" component={Snapshots} />
+      <Route path="/quotas" component={QuotaManagement} />
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
     </Switch>
@@ -31,9 +32,7 @@ function App() {
       <ThemeProvider defaultTheme="dark">
         <TooltipProvider>
           <Toaster />
-          <DashboardLayout>
-            <Router />
-          </DashboardLayout>
+          <Router />
         </TooltipProvider>
       </ThemeProvider>
     </ErrorBoundary>

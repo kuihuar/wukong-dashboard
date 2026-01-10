@@ -18,7 +18,9 @@ import {
   Check,
   Plus,
   Trash2,
+  AlertTriangle,
 } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useLocation } from "wouter";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -70,6 +72,18 @@ export default function VMCreate() {
   const [gpus, setGpus] = useState([
     { name: "gpu-0", deviceName: "nvidia.com/gpu" }
   ]);
+
+  // Quota check - using default project (id: 1) for now
+  const { data: quotaCheck } = trpc.quota.check.useQuery({
+    projectId: 1,
+    cpu,
+    memoryGB: memory,
+    storageGB: disks.reduce((sum, d) => sum + parseInt(d.size || "0"), 0),
+    gpus: enableGpu ? gpus.length : 0,
+  });
+
+  const hasQuotaWarning = quotaCheck && !quotaCheck.allowed;
+  const quotaWarningReason = quotaCheck?.reason || "";
 
   const createMutation = trpc.vm.create.useMutation({
     onSuccess: (data) => {
@@ -594,6 +608,17 @@ export default function VMCreate() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
+              {/* Quota Warning */}
+              {hasQuotaWarning && (
+                <Alert variant="destructive" className="border-red-500/50 bg-red-500/10">
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertTitle>Quota Exceeded</AlertTitle>
+                  <AlertDescription>
+                    {quotaWarningReason || "This VM configuration exceeds your project's resource quota. Please reduce the requested resources or contact an administrator."}
+                  </AlertDescription>
+                </Alert>
+              )}
+
               {/* Basics Summary */}
               <div className="p-4 rounded-lg bg-muted/30 border border-border/50">
                 <h4 className="font-medium mb-3 flex items-center gap-2">
@@ -691,10 +716,10 @@ export default function VMCreate() {
           {currentStep === "review" ? (
             <Button
               onClick={handleSubmit}
-              disabled={createMutation.isPending}
+              disabled={createMutation.isPending || hasQuotaWarning}
               className="gap-2"
             >
-              {createMutation.isPending ? "Creating..." : "Create VM"}
+              {createMutation.isPending ? "Creating..." : hasQuotaWarning ? "Quota Exceeded" : "Create VM"}
               <Check className="h-4 w-4" />
             </Button>
           ) : (

@@ -1,6 +1,19 @@
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users } from "../drizzle/schema";
+import { 
+  InsertUser, 
+  users, 
+  projects, 
+  projectMembers,
+  resourceQuotas, 
+  resourceUsage,
+  quotaTemplates,
+  InsertProject,
+  InsertResourceQuota,
+  InsertResourceUsage,
+  InsertQuotaTemplate,
+  InsertProjectMember,
+} from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -89,4 +102,404 @@ export async function getUserByOpenId(openId: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-// TODO: add feature queries here as your schema grows.
+// ==================== Project Queries ====================
+
+export async function createProject(project: InsertProject) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  const result = await db.insert(projects).values(project);
+  return result[0].insertId;
+}
+
+export async function getProjectById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  
+  const result = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getProjectsByUserId(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  
+  // Get projects where user is owner or member
+  const ownedProjects = await db.select().from(projects).where(eq(projects.ownerId, userId));
+  
+  const memberProjects = await db
+    .select({ project: projects })
+    .from(projectMembers)
+    .innerJoin(projects, eq(projectMembers.projectId, projects.id))
+    .where(eq(projectMembers.userId, userId));
+  
+  const allProjects = [...ownedProjects, ...memberProjects.map(m => m.project)];
+  // Remove duplicates
+  const uniqueProjects = allProjects.filter((p, i, arr) => arr.findIndex(x => x.id === p.id) === i);
+  return uniqueProjects;
+}
+
+export async function getAllProjects() {
+  const db = await getDb();
+  if (!db) return [];
+  
+  return await db.select().from(projects);
+}
+
+export async function updateProject(id: number, data: Partial<InsertProject>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  await db.update(projects).set(data).where(eq(projects.id, id));
+}
+
+export async function deleteProject(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  // Delete related records first
+  await db.delete(projectMembers).where(eq(projectMembers.projectId, id));
+  await db.delete(resourceQuotas).where(eq(resourceQuotas.projectId, id));
+  await db.delete(resourceUsage).where(eq(resourceUsage.projectId, id));
+  await db.delete(projects).where(eq(projects.id, id));
+}
+
+// ==================== Project Member Queries ====================
+
+export async function addProjectMember(member: InsertProjectMember) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  await db.insert(projectMembers).values(member);
+}
+
+export async function removeProjectMember(projectId: number, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  await db.delete(projectMembers).where(
+    and(eq(projectMembers.projectId, projectId), eq(projectMembers.userId, userId))
+  );
+}
+
+export async function getProjectMembers(projectId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  
+  return await db
+    .select({ member: projectMembers, user: users })
+    .from(projectMembers)
+    .innerJoin(users, eq(projectMembers.userId, users.id))
+    .where(eq(projectMembers.projectId, projectId));
+}
+
+// ==================== Resource Quota Queries ====================
+
+export async function createResourceQuota(quota: InsertResourceQuota) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  const result = await db.insert(resourceQuotas).values(quota);
+  return result[0].insertId;
+}
+
+export async function getQuotaByProjectId(projectId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  
+  const result = await db.select().from(resourceQuotas).where(eq(resourceQuotas.projectId, projectId)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function updateResourceQuota(projectId: number, data: Partial<InsertResourceQuota>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  await db.update(resourceQuotas).set(data).where(eq(resourceQuotas.projectId, projectId));
+}
+
+export async function getAllQuotas() {
+  const db = await getDb();
+  if (!db) return [];
+  
+  return await db
+    .select({ quota: resourceQuotas, project: projects })
+    .from(resourceQuotas)
+    .innerJoin(projects, eq(resourceQuotas.projectId, projects.id));
+}
+
+// ==================== Resource Usage Queries ====================
+
+export async function createResourceUsage(usage: InsertResourceUsage) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  await db.insert(resourceUsage).values(usage);
+}
+
+export async function getUsageByProjectId(projectId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  
+  const result = await db.select().from(resourceUsage).where(eq(resourceUsage.projectId, projectId)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function updateResourceUsage(projectId: number, data: Partial<InsertResourceUsage>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  await db.update(resourceUsage).set(data).where(eq(resourceUsage.projectId, projectId));
+}
+
+export async function getQuotaAndUsage(projectId: number) {
+  const db = await getDb();
+  if (!db) return { quota: undefined, usage: undefined };
+  
+  const quota = await getQuotaByProjectId(projectId);
+  const usage = await getUsageByProjectId(projectId);
+  
+  return { quota, usage };
+}
+
+// ==================== Quota Template Queries ====================
+
+export async function createQuotaTemplate(template: InsertQuotaTemplate) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  const result = await db.insert(quotaTemplates).values(template);
+  return result[0].insertId;
+}
+
+export async function getAllQuotaTemplates() {
+  const db = await getDb();
+  if (!db) return [];
+  
+  return await db.select().from(quotaTemplates);
+}
+
+export async function getQuotaTemplateById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  
+  const result = await db.select().from(quotaTemplates).where(eq(quotaTemplates.id, id)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function updateQuotaTemplate(id: number, data: Partial<InsertQuotaTemplate>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  await db.update(quotaTemplates).set(data).where(eq(quotaTemplates.id, id));
+}
+
+export async function deleteQuotaTemplate(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  await db.delete(quotaTemplates).where(eq(quotaTemplates.id, id));
+}
+
+// ==================== Quota Check Helpers ====================
+
+export interface QuotaCheckResult {
+  allowed: boolean;
+  reason?: string;
+  current: {
+    vms: number;
+    cpu: number;
+    memoryGB: number;
+    storageGB: number;
+    gpus: number;
+    snapshots: number;
+  };
+  limit: {
+    vms: number;
+    cpu: number;
+    memoryGB: number;
+    storageGB: number;
+    gpus: number;
+    snapshots: number;
+  };
+  requested?: {
+    cpu: number;
+    memoryGB: number;
+    storageGB: number;
+    gpus: number;
+  };
+}
+
+export async function checkQuotaForVM(
+  projectId: number, 
+  requestedCPU: number, 
+  requestedMemoryGB: number, 
+  requestedStorageGB: number,
+  requestedGPUs: number = 0
+): Promise<QuotaCheckResult> {
+  const { quota, usage } = await getQuotaAndUsage(projectId);
+  
+  // If no quota is set, allow by default
+  if (!quota) {
+    return {
+      allowed: true,
+      current: { vms: 0, cpu: 0, memoryGB: 0, storageGB: 0, gpus: 0, snapshots: 0 },
+      limit: { vms: 999, cpu: 999, memoryGB: 999, storageGB: 9999, gpus: 999, snapshots: 999 },
+    };
+  }
+  
+  // If quota enforcement is disabled, allow
+  if (!quota.enabled) {
+    return {
+      allowed: true,
+      current: {
+        vms: usage?.usedVMs || 0,
+        cpu: usage?.usedCPU || 0,
+        memoryGB: usage?.usedMemoryGB || 0,
+        storageGB: usage?.usedStorageGB || 0,
+        gpus: usage?.usedGPUs || 0,
+        snapshots: usage?.usedSnapshots || 0,
+      },
+      limit: {
+        vms: quota.maxVMs,
+        cpu: quota.maxCPU,
+        memoryGB: quota.maxMemoryGB,
+        storageGB: quota.maxStorageGB,
+        gpus: quota.maxGPUs,
+        snapshots: quota.maxSnapshots,
+      },
+    };
+  }
+  
+  const currentUsage = {
+    vms: usage?.usedVMs || 0,
+    cpu: usage?.usedCPU || 0,
+    memoryGB: usage?.usedMemoryGB || 0,
+    storageGB: usage?.usedStorageGB || 0,
+    gpus: usage?.usedGPUs || 0,
+    snapshots: usage?.usedSnapshots || 0,
+  };
+  
+  const limits = {
+    vms: quota.maxVMs,
+    cpu: quota.maxCPU,
+    memoryGB: quota.maxMemoryGB,
+    storageGB: quota.maxStorageGB,
+    gpus: quota.maxGPUs,
+    snapshots: quota.maxSnapshots,
+  };
+  
+  const requested = {
+    cpu: requestedCPU,
+    memoryGB: requestedMemoryGB,
+    storageGB: requestedStorageGB,
+    gpus: requestedGPUs,
+  };
+  
+  // Check VM count
+  if (currentUsage.vms + 1 > limits.vms) {
+    return {
+      allowed: false,
+      reason: `VM limit exceeded. Current: ${currentUsage.vms}, Limit: ${limits.vms}`,
+      current: currentUsage,
+      limit: limits,
+      requested,
+    };
+  }
+  
+  // Check CPU
+  if (currentUsage.cpu + requestedCPU > limits.cpu) {
+    return {
+      allowed: false,
+      reason: `CPU quota exceeded. Current: ${currentUsage.cpu}, Requested: ${requestedCPU}, Limit: ${limits.cpu}`,
+      current: currentUsage,
+      limit: limits,
+      requested,
+    };
+  }
+  
+  // Check Memory
+  if (currentUsage.memoryGB + requestedMemoryGB > limits.memoryGB) {
+    return {
+      allowed: false,
+      reason: `Memory quota exceeded. Current: ${currentUsage.memoryGB}GB, Requested: ${requestedMemoryGB}GB, Limit: ${limits.memoryGB}GB`,
+      current: currentUsage,
+      limit: limits,
+      requested,
+    };
+  }
+  
+  // Check Storage
+  if (currentUsage.storageGB + requestedStorageGB > limits.storageGB) {
+    return {
+      allowed: false,
+      reason: `Storage quota exceeded. Current: ${currentUsage.storageGB}GB, Requested: ${requestedStorageGB}GB, Limit: ${limits.storageGB}GB`,
+      current: currentUsage,
+      limit: limits,
+      requested,
+    };
+  }
+  
+  // Check GPUs
+  if (requestedGPUs > 0 && currentUsage.gpus + requestedGPUs > limits.gpus) {
+    return {
+      allowed: false,
+      reason: `GPU quota exceeded. Current: ${currentUsage.gpus}, Requested: ${requestedGPUs}, Limit: ${limits.gpus}`,
+      current: currentUsage,
+      limit: limits,
+      requested,
+    };
+  }
+  
+  return {
+    allowed: true,
+    current: currentUsage,
+    limit: limits,
+    requested,
+  };
+}
+
+export async function checkQuotaForSnapshot(projectId: number): Promise<QuotaCheckResult> {
+  const { quota, usage } = await getQuotaAndUsage(projectId);
+  
+  if (!quota || !quota.enabled) {
+    return {
+      allowed: true,
+      current: { vms: 0, cpu: 0, memoryGB: 0, storageGB: 0, gpus: 0, snapshots: usage?.usedSnapshots || 0 },
+      limit: { vms: 999, cpu: 999, memoryGB: 999, storageGB: 9999, gpus: 999, snapshots: 999 },
+    };
+  }
+  
+  const currentUsage = {
+    vms: usage?.usedVMs || 0,
+    cpu: usage?.usedCPU || 0,
+    memoryGB: usage?.usedMemoryGB || 0,
+    storageGB: usage?.usedStorageGB || 0,
+    gpus: usage?.usedGPUs || 0,
+    snapshots: usage?.usedSnapshots || 0,
+  };
+  
+  const limits = {
+    vms: quota.maxVMs,
+    cpu: quota.maxCPU,
+    memoryGB: quota.maxMemoryGB,
+    storageGB: quota.maxStorageGB,
+    gpus: quota.maxGPUs,
+    snapshots: quota.maxSnapshots,
+  };
+  
+  if (currentUsage.snapshots + 1 > limits.snapshots) {
+    return {
+      allowed: false,
+      reason: `Snapshot limit exceeded. Current: ${currentUsage.snapshots}, Limit: ${limits.snapshots}`,
+      current: currentUsage,
+      limit: limits,
+    };
+  }
+  
+  return {
+    allowed: true,
+    current: currentUsage,
+    limit: limits,
+  };
+}

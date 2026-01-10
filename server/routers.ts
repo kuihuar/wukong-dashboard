@@ -1,8 +1,10 @@
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, router } from "./_core/trpc";
+import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
+import * as db from "./db";
 
 // Mock data for virtual machines
 const mockVMs = [
@@ -14,6 +16,7 @@ const mockVMs = [
     memory: "8Gi",
     nodeName: "node-01",
     createdAt: Date.now() - 7 * 24 * 60 * 60 * 1000,
+    projectId: 1,
     networks: [
       { name: "default", interface: "eth0", ipAddress: "10.244.1.15", macAddress: "52:54:00:12:34:56" },
       { name: "external", interface: "eth1", ipAddress: "192.168.1.100", macAddress: "52:54:00:12:34:57" }
@@ -34,6 +37,7 @@ const mockVMs = [
     memory: "16Gi",
     nodeName: "node-02",
     createdAt: Date.now() - 14 * 24 * 60 * 60 * 1000,
+    projectId: 1,
     networks: [
       { name: "default", interface: "eth0", ipAddress: "10.244.2.20", macAddress: "52:54:00:22:34:56" },
       { name: "management", interface: "eth1", ipAddress: "192.168.2.50", macAddress: "52:54:00:22:34:57" }
@@ -54,6 +58,7 @@ const mockVMs = [
     memory: "64Gi",
     nodeName: "gpu-node-01",
     createdAt: Date.now() - 3 * 24 * 60 * 60 * 1000,
+    projectId: 2,
     networks: [
       { name: "default", interface: "eth0", ipAddress: "10.244.3.30", macAddress: "52:54:00:32:34:56" }
     ],
@@ -72,6 +77,7 @@ const mockVMs = [
     memory: "4Gi",
     nodeName: "node-01",
     createdAt: Date.now() - 30 * 24 * 60 * 60 * 1000,
+    projectId: 1,
     networks: [
       { name: "default", interface: "eth0", ipAddress: "10.244.1.40", macAddress: "52:54:00:42:34:56" }
     ],
@@ -90,6 +96,7 @@ const mockVMs = [
     memory: "8Gi",
     nodeName: "node-03",
     createdAt: Date.now() - 5 * 24 * 60 * 60 * 1000,
+    projectId: 2,
     networks: [
       { name: "default", interface: "eth0", ipAddress: "", macAddress: "52:54:00:52:34:56" }
     ],
@@ -108,6 +115,7 @@ const mockVMs = [
     memory: "8Gi",
     nodeName: "",
     createdAt: Date.now() - 10 * 60 * 1000,
+    projectId: 1,
     networks: [
       { name: "default", interface: "eth0", ipAddress: "", macAddress: "" }
     ],
@@ -172,6 +180,21 @@ function generateMetricsHistory(baseValue: number, points: number = 24) {
   return history;
 }
 
+// Helper to parse memory string to GB
+function parseMemoryToGB(memory: string): number {
+  const match = memory.match(/^(\d+)(Gi|G|Mi|M)?$/i);
+  if (!match) return 0;
+  const value = parseInt(match[1]);
+  const unit = (match[2] || 'Gi').toLowerCase();
+  if (unit === 'mi' || unit === 'm') return Math.ceil(value / 1024);
+  return value;
+}
+
+// Helper to parse storage string to GB
+function parseStorageToGB(size: string): number {
+  return parseMemoryToGB(size);
+}
+
 export const appRouter = router({
   system: systemRouter,
   auth: router({
@@ -183,21 +206,316 @@ export const appRouter = router({
     }),
   }),
 
-  vm: router({
-    list: publicProcedure.query(() => {
-      return mockVMs.map(vm => ({
-        id: vm.id,
-        name: vm.name,
-        status: vm.status,
-        cpu: vm.cpu,
-        memory: vm.memory,
-        nodeName: vm.nodeName,
-        ipAddress: vm.networks[0]?.ipAddress || "",
-        osImage: vm.osImage,
-        createdAt: vm.createdAt,
-        hasGpu: vm.gpus.length > 0
-      }));
+  // ==================== Project Management ====================
+  project: router({
+    list: publicProcedure.query(async () => {
+      const projects = await db.getAllProjects();
+      return projects;
     }),
+
+    get: publicProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => {
+        const project = await db.getProjectById(input.id);
+        if (!project) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+        }
+        return project;
+      }),
+
+    create: protectedProcedure
+      .input(z.object({
+        name: z.string().min(1).max(128),
+        description: z.string().optional(),
+        namespace: z.string().min(1).max(64),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const projectId = await db.createProject({
+          name: input.name,
+          description: input.description || null,
+          namespace: input.namespace,
+          ownerId: ctx.user.id,
+        });
+
+        // Create default quota for the project
+        await db.createResourceQuota({
+          projectId,
+          maxVMs: 10,
+          maxCPU: 32,
+          maxMemoryGB: 64,
+          maxStorageGB: 500,
+          maxGPUs: 0,
+          maxSnapshots: 20,
+          enabled: true,
+        });
+
+        // Initialize usage tracking
+        await db.createResourceUsage({
+          projectId,
+          usedVMs: 0,
+          usedCPU: 0,
+          usedMemoryGB: 0,
+          usedStorageGB: 0,
+          usedGPUs: 0,
+          usedSnapshots: 0,
+        });
+
+        return { success: true, id: projectId, message: `Project "${input.name}" created successfully` };
+      }),
+
+    update: protectedProcedure
+      .input(z.object({
+        id: z.number(),
+        name: z.string().min(1).max(128).optional(),
+        description: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        await db.updateProject(input.id, {
+          name: input.name,
+          description: input.description,
+        });
+        return { success: true, message: "Project updated successfully" };
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await db.deleteProject(input.id);
+        return { success: true, message: "Project deleted successfully" };
+      }),
+
+    members: publicProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(async ({ input }) => {
+        const members = await db.getProjectMembers(input.projectId);
+        return members.map(m => ({
+          id: m.member.id,
+          userId: m.member.userId,
+          userName: m.user.name,
+          userEmail: m.user.email,
+          role: m.member.role,
+          createdAt: m.member.createdAt,
+        }));
+      }),
+
+    addMember: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        userId: z.number(),
+        role: z.enum(["admin", "member", "viewer"]),
+      }))
+      .mutation(async ({ input }) => {
+        await db.addProjectMember({
+          projectId: input.projectId,
+          userId: input.userId,
+          role: input.role,
+        });
+        return { success: true, message: "Member added successfully" };
+      }),
+
+    removeMember: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        userId: z.number(),
+      }))
+      .mutation(async ({ input }) => {
+        await db.removeProjectMember(input.projectId, input.userId);
+        return { success: true, message: "Member removed successfully" };
+      }),
+  }),
+
+  // ==================== Quota Management ====================
+  quota: router({
+    // Get quota and usage for a project
+    get: publicProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(async ({ input }) => {
+        const { quota, usage } = await db.getQuotaAndUsage(input.projectId);
+        return {
+          quota: quota || null,
+          usage: usage || null,
+        };
+      }),
+
+    // Get all quotas with project info (admin view)
+    list: publicProcedure.query(async () => {
+      const quotas = await db.getAllQuotas();
+      const result = [];
+      
+      for (const { quota, project } of quotas) {
+        const usage = await db.getUsageByProjectId(quota.projectId);
+        result.push({
+          ...quota,
+          projectName: project.name,
+          projectNamespace: project.namespace,
+          usage: usage || {
+            usedVMs: 0,
+            usedCPU: 0,
+            usedMemoryGB: 0,
+            usedStorageGB: 0,
+            usedGPUs: 0,
+            usedSnapshots: 0,
+          },
+        });
+      }
+      
+      return result;
+    }),
+
+    // Update quota limits
+    update: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        maxVMs: z.number().min(0).optional(),
+        maxCPU: z.number().min(0).optional(),
+        maxMemoryGB: z.number().min(0).optional(),
+        maxStorageGB: z.number().min(0).optional(),
+        maxGPUs: z.number().min(0).optional(),
+        maxSnapshots: z.number().min(0).optional(),
+        enabled: z.boolean().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const { projectId, ...updates } = input;
+        await db.updateResourceQuota(projectId, updates);
+        return { success: true, message: "Quota updated successfully" };
+      }),
+
+    // Check if a VM creation would exceed quota
+    check: publicProcedure
+      .input(z.object({
+        projectId: z.number(),
+        cpu: z.number(),
+        memoryGB: z.number(),
+        storageGB: z.number(),
+        gpus: z.number().default(0),
+      }))
+      .query(async ({ input }) => {
+        const result = await db.checkQuotaForVM(
+          input.projectId,
+          input.cpu,
+          input.memoryGB,
+          input.storageGB,
+          input.gpus
+        );
+        return result;
+      }),
+
+    // Check if a snapshot creation would exceed quota
+    checkSnapshot: publicProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(async ({ input }) => {
+        const result = await db.checkQuotaForSnapshot(input.projectId);
+        return result;
+      }),
+
+    // Apply a template to a project's quota
+    applyTemplate: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        templateId: z.number(),
+      }))
+      .mutation(async ({ input }) => {
+        const template = await db.getQuotaTemplateById(input.templateId);
+        if (!template) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Template not found" });
+        }
+        
+        await db.updateResourceQuota(input.projectId, {
+          maxVMs: template.maxVMs,
+          maxCPU: template.maxCPU,
+          maxMemoryGB: template.maxMemoryGB,
+          maxStorageGB: template.maxStorageGB,
+          maxGPUs: template.maxGPUs,
+          maxSnapshots: template.maxSnapshots,
+        });
+        
+        return { success: true, message: `Applied template "${template.name}" successfully` };
+      }),
+  }),
+
+  // ==================== Quota Templates ====================
+  quotaTemplate: router({
+    list: publicProcedure.query(async () => {
+      return await db.getAllQuotaTemplates();
+    }),
+
+    get: publicProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => {
+        const template = await db.getQuotaTemplateById(input.id);
+        if (!template) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Template not found" });
+        }
+        return template;
+      }),
+
+    create: protectedProcedure
+      .input(z.object({
+        name: z.string().min(1).max(64),
+        description: z.string().optional(),
+        maxVMs: z.number().min(0),
+        maxCPU: z.number().min(0),
+        maxMemoryGB: z.number().min(0),
+        maxStorageGB: z.number().min(0),
+        maxGPUs: z.number().min(0),
+        maxSnapshots: z.number().min(0),
+        isDefault: z.boolean().default(false),
+      }))
+      .mutation(async ({ input }) => {
+        const id = await db.createQuotaTemplate(input);
+        return { success: true, id, message: `Template "${input.name}" created successfully` };
+      }),
+
+    update: protectedProcedure
+      .input(z.object({
+        id: z.number(),
+        name: z.string().min(1).max(64).optional(),
+        description: z.string().optional(),
+        maxVMs: z.number().min(0).optional(),
+        maxCPU: z.number().min(0).optional(),
+        maxMemoryGB: z.number().min(0).optional(),
+        maxStorageGB: z.number().min(0).optional(),
+        maxGPUs: z.number().min(0).optional(),
+        maxSnapshots: z.number().min(0).optional(),
+        isDefault: z.boolean().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const { id, ...updates } = input;
+        await db.updateQuotaTemplate(id, updates);
+        return { success: true, message: "Template updated successfully" };
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await db.deleteQuotaTemplate(input.id);
+        return { success: true, message: "Template deleted successfully" };
+      }),
+  }),
+
+  // ==================== Virtual Machine Management ====================
+  vm: router({
+    list: publicProcedure
+      .input(z.object({ projectId: z.number().optional() }).optional())
+      .query(({ input }) => {
+        let vms = mockVMs;
+        if (input?.projectId) {
+          vms = mockVMs.filter(vm => vm.projectId === input.projectId);
+        }
+        return vms.map(vm => ({
+          id: vm.id,
+          name: vm.name,
+          status: vm.status,
+          cpu: vm.cpu,
+          memory: vm.memory,
+          nodeName: vm.nodeName,
+          ipAddress: vm.networks[0]?.ipAddress || "",
+          osImage: vm.osImage,
+          createdAt: vm.createdAt,
+          hasGpu: vm.gpus.length > 0,
+          projectId: vm.projectId,
+        }));
+      }),
 
     get: publicProcedure
       .input(z.object({ id: z.string() }))
@@ -220,6 +538,7 @@ export const appRouter = router({
         cpu: z.number().min(1).max(64),
         memory: z.string(),
         osImage: z.string(),
+        projectId: z.number().optional(),
         disks: z.array(z.object({
           name: z.string(),
           size: z.string(),
@@ -239,7 +558,41 @@ export const appRouter = router({
           deviceName: z.string()
         })).optional()
       }))
-      .mutation(({ input }) => {
+      .mutation(async ({ input }) => {
+        // Check quota if projectId is provided
+        if (input.projectId) {
+          const memoryGB = parseMemoryToGB(input.memory);
+          const storageGB = input.disks.reduce((sum, d) => sum + parseStorageToGB(d.size), 0);
+          const gpuCount = input.gpus?.length || 0;
+          
+          const quotaCheck = await db.checkQuotaForVM(
+            input.projectId,
+            input.cpu,
+            memoryGB,
+            storageGB,
+            gpuCount
+          );
+          
+          if (!quotaCheck.allowed) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: quotaCheck.reason || "Quota exceeded",
+            });
+          }
+          
+          // Update usage after successful creation
+          const currentUsage = await db.getUsageByProjectId(input.projectId);
+          if (currentUsage) {
+            await db.updateResourceUsage(input.projectId, {
+              usedVMs: currentUsage.usedVMs + 1,
+              usedCPU: currentUsage.usedCPU + input.cpu,
+              usedMemoryGB: currentUsage.usedMemoryGB + memoryGB,
+              usedStorageGB: currentUsage.usedStorageGB + storageGB,
+              usedGPUs: currentUsage.usedGPUs + gpuCount,
+            });
+          }
+        }
+        
         const newId = `wukong-${input.name}-${Date.now()}`;
         return {
           success: true,
@@ -253,11 +606,30 @@ export const appRouter = router({
         id: z.string(),
         action: z.enum(["start", "stop", "restart", "delete"])
       }))
-      .mutation(({ input }) => {
+      .mutation(async ({ input }) => {
         const vm = mockVMs.find(v => v.id === input.id);
         if (!vm) {
           return { success: false, message: "Virtual machine not found" };
         }
+        
+        // If deleting, update usage
+        if (input.action === "delete" && vm.projectId) {
+          const currentUsage = await db.getUsageByProjectId(vm.projectId);
+          if (currentUsage) {
+            const memoryGB = parseMemoryToGB(vm.memory);
+            const storageGB = vm.disks.reduce((sum, d) => sum + parseStorageToGB(d.size), 0);
+            const gpuCount = vm.gpus.length;
+            
+            await db.updateResourceUsage(vm.projectId, {
+              usedVMs: Math.max(0, currentUsage.usedVMs - 1),
+              usedCPU: Math.max(0, currentUsage.usedCPU - vm.cpu),
+              usedMemoryGB: Math.max(0, currentUsage.usedMemoryGB - memoryGB),
+              usedStorageGB: Math.max(0, currentUsage.usedStorageGB - storageGB),
+              usedGPUs: Math.max(0, currentUsage.usedGPUs - gpuCount),
+            });
+          }
+        }
+        
         const actionMessages = {
           start: `Starting virtual machine "${vm.name}"...`,
           stop: `Stopping virtual machine "${vm.name}"...`,
@@ -267,25 +639,32 @@ export const appRouter = router({
         return { success: true, message: actionMessages[input.action] };
       }),
 
-    stats: publicProcedure.query(() => {
-      const running = mockVMs.filter(v => v.status === "Running").length;
-      const stopped = mockVMs.filter(v => v.status === "Stopped").length;
-      const error = mockVMs.filter(v => v.status === "Error").length;
-      const pending = mockVMs.filter(v => v.status === "Pending").length;
-      const totalCpu = mockVMs.reduce((sum, v) => sum + v.cpu, 0);
-      const totalMemory = mockVMs.reduce((sum, v) => sum + parseInt(v.memory), 0);
-      return {
-        total: mockVMs.length,
-        running,
-        stopped,
-        error,
-        pending,
-        totalCpu,
-        totalMemory: `${totalMemory}Gi`
-      };
-    })
+    stats: publicProcedure
+      .input(z.object({ projectId: z.number().optional() }).optional())
+      .query(({ input }) => {
+        let vms = mockVMs;
+        if (input?.projectId) {
+          vms = mockVMs.filter(vm => vm.projectId === input.projectId);
+        }
+        const running = vms.filter(v => v.status === "Running").length;
+        const stopped = vms.filter(v => v.status === "Stopped").length;
+        const error = vms.filter(v => v.status === "Error").length;
+        const pending = vms.filter(v => v.status === "Pending").length;
+        const totalCpu = vms.reduce((sum, v) => sum + v.cpu, 0);
+        const totalMemory = vms.reduce((sum, v) => sum + parseInt(v.memory), 0);
+        return {
+          total: vms.length,
+          running,
+          stopped,
+          error,
+          pending,
+          totalCpu,
+          totalMemory: `${totalMemory}Gi`
+        };
+      })
   }),
 
+  // ==================== Snapshot Management ====================
   snapshot: router({
     list: publicProcedure.query(() => mockSnapshots),
 
@@ -298,13 +677,36 @@ export const appRouter = router({
     create: publicProcedure
       .input(z.object({
         wukongId: z.string(),
-        name: z.string().min(1)
+        name: z.string().min(1),
+        projectId: z.number().optional(),
       }))
-      .mutation(({ input }) => {
+      .mutation(async ({ input }) => {
         const vm = mockVMs.find(v => v.id === input.wukongId);
         if (!vm) {
           return { success: false, message: "Virtual machine not found" };
         }
+        
+        // Check snapshot quota if projectId is provided
+        const projectId = input.projectId || vm.projectId;
+        if (projectId) {
+          const quotaCheck = await db.checkQuotaForSnapshot(projectId);
+          
+          if (!quotaCheck.allowed) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: quotaCheck.reason || "Snapshot quota exceeded",
+            });
+          }
+          
+          // Update usage
+          const currentUsage = await db.getUsageByProjectId(projectId);
+          if (currentUsage) {
+            await db.updateResourceUsage(projectId, {
+              usedSnapshots: currentUsage.usedSnapshots + 1,
+            });
+          }
+        }
+        
         return {
           success: true,
           id: `snapshot-${Date.now()}`,
@@ -326,12 +728,26 @@ export const appRouter = router({
       }),
 
     delete: publicProcedure
-      .input(z.object({ snapshotId: z.string() }))
-      .mutation(({ input }) => {
+      .input(z.object({ 
+        snapshotId: z.string(),
+        projectId: z.number().optional(),
+      }))
+      .mutation(async ({ input }) => {
         const snapshot = mockSnapshots.find(s => s.id === input.snapshotId);
         if (!snapshot) {
           return { success: false, message: "Snapshot not found" };
         }
+        
+        // Update usage if projectId is provided
+        if (input.projectId) {
+          const currentUsage = await db.getUsageByProjectId(input.projectId);
+          if (currentUsage) {
+            await db.updateResourceUsage(input.projectId, {
+              usedSnapshots: Math.max(0, currentUsage.usedSnapshots - 1),
+            });
+          }
+        }
+        
         return {
           success: true,
           message: `Deleting snapshot "${snapshot.name}"...`

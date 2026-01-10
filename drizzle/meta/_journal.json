@@ -8,6 +8,13 @@
       "when": 1768030344645,
       "tag": "0000_steep_golden_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1768032852605,
+      "tag": "0001_numerous_chimera",
+      "breakpoints": true
     }
   ]
 }
