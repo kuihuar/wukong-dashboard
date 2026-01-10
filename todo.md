@@ -21,3 +21,12 @@
 - [x] 深色主題配色方案
 - [x] 精緻的卡片與陰影效果
 - [x] 狀態指示器動畫效果
+
+
+## 高級功能（Phase 2）
+- [x] Go 後端服務：使用 Gin 框架和 client-go
+- [x] Kubernetes API 集成：連接真實 KubeVirt 集群
+- [x] VNC 控制台：集成 noVNC 瀏覽器內操作虛擬機
+- [x] WebSocket 實時狀態：Kubernetes Watch API 即時同步
+- [x] 前端 VNC 組件：嵌入式 VNC 查看器
+- [x] 前端實時狀態：WebSocket 客戶端集成

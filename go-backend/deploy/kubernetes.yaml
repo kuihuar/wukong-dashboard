@@ -1,0 +1,133 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: wukong-dashboard
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: wukong-dashboard
+rules:
+  # Wukong CRD permissions
+  - apiGroups: ["vm.novasphere.dev"]
+    resources: ["wukongs", "wukongsnapshots"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # KubeVirt permissions
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachines", "virtualmachineinstances"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # KubeVirt subresources for VNC
+  - apiGroups: ["subresources.kubevirt.io"]
+    resources: ["virtualmachineinstances/vnc", "virtualmachineinstances/console"]
+    verbs: ["get"]
+  # Node info for scheduling
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+  # PVC for storage info
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: wukong-dashboard
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: wukong-dashboard
+subjects:
+  - kind: ServiceAccount
+    name: wukong-dashboard
+    namespace: default
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wukong-dashboard-backend
+  namespace: default
+  labels:
+    app: wukong-dashboard-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wukong-dashboard-backend
+  template:
+    metadata:
+      labels:
+        app: wukong-dashboard-backend
+    spec:
+      serviceAccountName: wukong-dashboard
+      containers:
+        - name: backend
+          image: kuihuar/wukong-dashboard-backend:latest
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GIN_MODE
+              value: "release"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wukong-dashboard-backend
+  namespace: default
+spec:
+  selector:
+    app: wukong-dashboard-backend
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wukong-dashboard
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/websocket-services: "wukong-dashboard-backend"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: wukong.example.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: wukong-dashboard-backend
+                port:
+                  number: 8080

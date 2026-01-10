@@ -35,13 +35,19 @@ import {
   Clock,
 } from "lucide-react";
 import { useLocation } from "wouter";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { toast } from "sonner";
+import { useVMListRealtime } from "@/hooks/useRealtimeUpdates";
 
 export default function VMList() {
   const [, setLocation] = useLocation();
   const [searchQuery, setSearchQuery] = useState("");
-  const { data: vms, isLoading, refetch } = trpc.vm.list.useQuery();
+  const { data: initialVMs, isLoading, refetch } = trpc.vm.list.useQuery();
+  
+  // Real-time updates via WebSocket
+  const { vms: realtimeVMs, isConnected: wsConnected } = useVMListRealtime(initialVMs || []);
+  const vms = realtimeVMs.length > 0 ? realtimeVMs : initialVMs;
+  
   const actionMutation = trpc.vm.action.useMutation({
     onSuccess: (data) => {
       toast.success(data.message);
@@ -143,9 +149,15 @@ export default function VMList() {
                 className="pl-10"
               />
             </div>
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Server className="h-4 w-4" />
-              <span>{filteredVMs.length} virtual machines</span>
+            <div className="flex items-center gap-4 text-sm text-muted-foreground">
+              <div className="flex items-center gap-2">
+                <Server className="h-4 w-4" />
+                <span>{filteredVMs.length} virtual machines</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-500'}`} />
+                <span className="text-xs">{wsConnected ? 'Live' : 'Offline'}</span>
+              </div>
             </div>
           </div>
         </CardContent>

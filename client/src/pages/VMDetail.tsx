@@ -21,7 +21,9 @@ import {
   Clock,
   Camera,
   Activity,
+  Terminal,
 } from "lucide-react";
+import { VNCConsole } from "@/components/VNCConsole";
 import { useLocation, useParams } from "wouter";
 import { toast } from "sonner";
 import {
@@ -272,6 +274,10 @@ export default function VMDetail() {
           <TabsTrigger value="snapshots" className="gap-2">
             <Camera className="h-4 w-4" />
             Snapshots
+          </TabsTrigger>
+          <TabsTrigger value="console" className="gap-2">
+            <Terminal className="h-4 w-4" />
+            Console
           </TabsTrigger>
         </TabsList>
 
@@ -537,6 +543,33 @@ export default function VMDetail() {
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Console Tab */}
+        <TabsContent value="console" className="space-y-4">
+          {vm.status === "Running" ? (
+            <VNCConsole vmName={vm.name} />
+          ) : (
+            <Card className="glass-card">
+              <CardContent className="py-12">
+                <div className="flex flex-col items-center justify-center text-center">
+                  <Terminal className="h-12 w-12 text-muted-foreground mb-4" />
+                  <h3 className="text-lg font-medium">Console Unavailable</h3>
+                  <p className="text-muted-foreground mt-2 max-w-md">
+                    The VNC console is only available when the virtual machine is running.
+                    Start the VM to access the console.
+                  </p>
+                  <Button
+                    onClick={() => handleAction("start")}
+                    className="mt-6 gap-2"
+                  >
+                    <Play className="h-4 w-4" />
+                    Start VM
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
       </Tabs>
     </div>
