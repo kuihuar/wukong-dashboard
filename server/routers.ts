@@ -14,7 +14,8 @@ async function fetchFromGoBackend<T>(endpoint: string): Promise<T> {
   try {
     const response = await fetch(url);
     if (!response.ok) {
-      throw new Error(`Go backend error: ${response.status} ${response.statusText}`);
+      const errorText = await response.text().catch(() => "");
+      throw new Error(`Go backend error: ${response.status} ${response.statusText}${errorText ? ` - ${errorText}` : ""}`);
     }
     return await response.json() as T;
   } catch (error) {
@@ -22,6 +23,35 @@ async function fetchFromGoBackend<T>(endpoint: string): Promise<T> {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
       message: `Failed to connect to Go backend: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
+}
+
+// Helper function to post data to Go backend
+async function postToGoBackend<T>(endpoint: string, data: unknown): Promise<T> {
+  const goBackendUrl = process.env.GO_BACKEND_URL || "http://localhost:8081";
+  const url = `${goBackendUrl}${endpoint}`;
+  
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(data),
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+      throw new Error(`Go backend error: ${response.status} ${response.statusText}${errorText ? ` - ${errorText}` : ""}`);
+    }
+    
+    return await response.json() as T;
+  } catch (error) {
+    console.error(`Failed to post to Go backend ${url}:`, error);
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: `Failed to create VM in Go backend: ${error instanceof Error ? error.message : String(error)}`,
     });
   }
 }
@@ -816,26 +846,93 @@ export const appRouter = router({
               message: quotaCheck.reason || "Quota exceeded",
             });
           }
-          
-          // Update usage after successful creation
-          const currentUsage = await db.getUsageByProjectId(input.projectId);
-          if (currentUsage) {
-            await db.updateResourceUsage(input.projectId, {
-              usedVMs: currentUsage.usedVMs + 1,
-              usedCPU: currentUsage.usedCPU + input.cpu,
-              usedMemoryGB: currentUsage.usedMemoryGB + memoryGB,
-              usedStorageGB: currentUsage.usedStorageGB + storageGB,
-              usedGPUs: currentUsage.usedGPUs + gpuCount,
-            });
-          }
         }
+
+        // TODO: Network type validation and mapping
+        // Wukong CRD supports: "bridge", "macvlan", "sriov", "ovs"
+        // Frontend may send "pod" which is not supported - need to handle this
+        // For now, filter out unsupported types or map them
         
-        const newId = `wukong-${input.name}-${Date.now()}`;
-        return {
-          success: true,
-          id: newId,
-          message: `Virtual machine "${input.name}" created successfully`
+        // Prepare request data for Go backend
+        const goBackendRequest = {
+          name: input.name,
+          cpu: input.cpu,
+          memory: input.memory,
+          osImage: input.osImage,
+          disks: input.disks.map(disk => ({
+            name: disk.name,
+            size: disk.size,
+            storageClassName: disk.storageClassName,
+            boot: disk.boot,
+            ...(disk.image && { image: disk.image }),
+          })),
+          networks: input.networks
+            // Filter out unsupported network types for now
+            .filter(network => {
+              const supportedTypes = ["bridge", "macvlan", "sriov", "ovs"];
+              if (network.type && !supportedTypes.includes(network.type)) {
+                console.warn(`Network type "${network.type}" is not supported by Wukong CRD. Supported types: ${supportedTypes.join(", ")}`);
+                return false;
+              }
+              return true;
+            })
+            .map(network => ({
+              name: network.name,
+              // Only include type if it's supported
+              ...(network.type && { type: network.type }),
+              ...(network.mode && { mode: network.mode }),
+              ...(network.ipAddress && { ipAddress: network.ipAddress }),
+              ...(network.gateway && { gateway: network.gateway }),
+            })),
+          ...(input.gpus && input.gpus.length > 0 && {
+            gpus: input.gpus.map(gpu => ({
+              name: gpu.name,
+              deviceName: gpu.deviceName,
+            })),
+          }),
         };
+
+        // Create VM in Go backend (Kubernetes)
+        // Note: Go backend uses "default" namespace if not specified in query
+        try {
+          // Get namespace from project if available, otherwise use "default"
+          const namespace = "default"; // TODO: Get namespace from project configuration
+          const endpoint = `/api/vms${namespace !== "default" ? `?namespace=${namespace}` : ""}`;
+          
+          const result = await postToGoBackend<{
+            success: boolean;
+            id: string;
+            name: string;
+            message: string;
+          }>(endpoint, goBackendRequest);
+
+          // Update quota usage after successful creation
+          if (input.projectId) {
+            const memoryGB = parseMemoryToGB(input.memory);
+            const storageGB = input.disks.reduce((sum, d) => sum + parseStorageToGB(d.size), 0);
+            const gpuCount = input.gpus?.length || 0;
+            
+            const currentUsage = await db.getUsageByProjectId(input.projectId);
+            if (currentUsage) {
+              await db.updateResourceUsage(input.projectId, {
+                usedVMs: currentUsage.usedVMs + 1,
+                usedCPU: currentUsage.usedCPU + input.cpu,
+                usedMemoryGB: currentUsage.usedMemoryGB + memoryGB,
+                usedStorageGB: currentUsage.usedStorageGB + storageGB,
+                usedGPUs: currentUsage.usedGPUs + gpuCount,
+              });
+            }
+          }
+
+          return {
+            success: result.success,
+            id: result.id || result.name,
+            message: result.message || `Virtual machine "${input.name}" created successfully`,
+          };
+        } catch (error) {
+          // If Go backend fails, throw the error (don't create mock VM)
+          throw error;
+        }
       }),
 
     action: publicProcedure

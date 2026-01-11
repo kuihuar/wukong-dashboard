@@ -24,14 +24,31 @@ import { ENV } from './_core/env';
 let _db: ReturnType<typeof drizzle> | null = null;
 
 // Lazily create the drizzle instance so local tooling can run without a DB.
+// TiDB is MySQL-compatible, so we can use the same connection string format.
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      _db = drizzle(process.env.DATABASE_URL);
+      const dbUrl = process.env.DATABASE_URL;
+      // Log connection info (without password)
+      const urlMatch = dbUrl.match(/^mysql:\/\/([^:]+):([^@]+)@([^:]+):(\d+)\/(.+)$/);
+      if (urlMatch) {
+        const [, user, , host, port, database] = urlMatch;
+        console.log(`[Database] Connecting to TiDB at ${host}:${port}/${database} as ${user}`);
+      }
+      
+      _db = drizzle(dbUrl);
+      
+      // Connection will be tested on first actual query
+      console.log(`[Database] Drizzle instance created for TiDB`);
     } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
+      console.error("[Database] Failed to connect to TiDB:", error);
+      if (error instanceof Error) {
+        console.error("[Database] Error details:", error.message);
+      }
       _db = null;
     }
+  } else if (!process.env.DATABASE_URL) {
+    console.warn("[Database] DATABASE_URL not configured");
   }
   return _db;
 }

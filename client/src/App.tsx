@@ -12,6 +12,8 @@ import VMCreate from "./pages/VMCreate";
 import Snapshots from "./pages/Snapshots";
 import QuotaManagement from "./pages/QuotaManagement";
 import ProjectManagement from "./pages/ProjectManagement";
+import UserManagement from "./pages/UserManagement";
+import UserProfile from "./pages/UserProfile";
 
 function Router() {
   return (
@@ -23,6 +25,8 @@ function Router() {
       <Route path="/snapshots" component={Snapshots} />
       <Route path="/quotas" component={QuotaManagement} />
       <Route path="/projects" component={ProjectManagement} />
+      <Route path="/users" component={UserManagement} />
+      <Route path="/profile" component={UserProfile} />
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
     </Switch>

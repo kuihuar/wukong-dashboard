@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/sidebar";
 import { getLoginUrl } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
-import { Server, LayoutDashboard, LogOut, PanelLeft, Camera, Plus, Gauge, FolderKanban } from "lucide-react";
+import { Server, LayoutDashboard, LogOut, PanelLeft, Camera, Plus, Gauge, FolderKanban, Users, UserCircle } from "lucide-react";
 import { ProjectSelector } from "./ProjectSelector";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
@@ -34,6 +34,7 @@ const menuItems = [
   { icon: Camera, label: "Snapshots", path: "/snapshots" },
   { icon: Gauge, label: "Resource Quotas", path: "/quotas" },
   { icon: FolderKanban, label: "Projects", path: "/projects" },
+  { icon: Users, label: "User Management", path: "/users" },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
@@ -250,6 +251,13 @@ function DashboardLayoutContent({
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuItem
+                  onClick={() => setLocation("/profile")}
+                  className="cursor-pointer"
+                >
+                  <UserCircle className="mr-2 h-4 w-4" />
+                  <span>Profile</span>
+                </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={logout}
                   className="cursor-pointer text-destructive focus:text-destructive"
