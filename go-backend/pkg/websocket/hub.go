@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -120,6 +121,17 @@ func (h *Hub) watchSnapshots(ctx context.Context) {
 
 		watcher, err := h.k8sClient.WatchSnapshots(ctx)
 		if err != nil {
+			// Check if the error is due to CRD not being installed
+			if isNotFoundError(err) {
+				log.Printf("WukongSnapshot CRD not found. Snapshot watching disabled. To enable, install the WukongSnapshot CRD.")
+				// Wait longer before retrying if CRD is missing
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(30 * time.Second):
+					continue
+				}
+			}
 			log.Printf("Failed to watch Snapshots: %v", err)
 			time.Sleep(5 * time.Second)
 			continue
@@ -128,6 +140,18 @@ func (h *Hub) watchSnapshots(ctx context.Context) {
 		h.handleWatch(ctx, watcher, "snapshot")
 		watcher.Stop()
 	}
+}
+
+// isNotFoundError checks if the error indicates a resource not found
+func isNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	// Check for common "not found" error patterns
+	return strings.Contains(errStr, "not found") ||
+		strings.Contains(errStr, "the server could not find the requested resource") ||
+		strings.Contains(errStr, "notfound")
 }
 
 // handleWatch processes watch events

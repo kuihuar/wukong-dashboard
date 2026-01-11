@@ -59,7 +59,7 @@ func (p *VNCProxy) HandleVNC(c *gin.Context) {
 	}
 
 	// Check VMI phase
-	phase, _, _ := vmi.Object["status"].(map[string]interface{})["phase"].(string)
+	phase, _ := vmi.Object["status"].(map[string]interface{})["phase"].(string)
 	if phase != "Running" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": fmt.Sprintf("VMI is not running (current phase: %s)", phase),
@@ -79,7 +79,7 @@ func (p *VNCProxy) HandleVNC(c *gin.Context) {
 	vncURL, err := p.buildVNCURL(vmName)
 	if err != nil {
 		log.Printf("Failed to build VNC URL: %v", err)
-		clientConn.WriteMessage(websocket.CloseMessage, 
+		clientConn.WriteMessage(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "Failed to build VNC URL"))
 		return
 	}
@@ -120,7 +120,7 @@ func (p *VNCProxy) HandleVNC(c *gin.Context) {
 func (p *VNCProxy) buildVNCURL(vmName string) (string, error) {
 	// KubeVirt VNC endpoint format:
 	// wss://<api-server>/apis/subresources.kubevirt.io/v1/namespaces/<namespace>/virtualmachineinstances/<name>/vnc
-	
+
 	host := p.restConfig.Host
 	if !strings.HasPrefix(host, "https://") && !strings.HasPrefix(host, "http://") {
 		host = "https://" + host
@@ -215,8 +215,8 @@ func (p *VNCProxy) GetVNCInfo(c *gin.Context) {
 		return
 	}
 
-	phase, _, _ := vmi.Object["status"].(map[string]interface{})["phase"].(string)
-	
+	phase, _ := vmi.Object["status"].(map[string]interface{})["phase"].(string)
+
 	c.JSON(http.StatusOK, gin.H{
 		"available": phase == "Running",
 		"vmName":    vmName,

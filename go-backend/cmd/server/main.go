@@ -19,7 +19,7 @@ import (
 func main() {
 	// Get configuration from environment
 	namespace := getEnv("NAMESPACE", "default")
-	port := getEnv("PORT", "8080")
+	port := getEnv("PORT", "8085")
 	mode := getEnv("GIN_MODE", "release")
 
 	gin.SetMode(mode)
@@ -70,7 +70,7 @@ func main() {
 			vms.GET("/:name", vmHandler.GetVM)
 			vms.POST("/:name/action", vmHandler.VMAction)
 			vms.GET("/:name/snapshots", snapshotHandler.ListSnapshotsByVM)
-			
+
 			// VNC routes
 			vms.GET("/:name/vnc", vncProxy.HandleVNC)
 			vms.GET("/:name/vnc/info", vncProxy.GetVNCInfo)

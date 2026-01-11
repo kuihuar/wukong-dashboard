@@ -6,6 +6,26 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import * as db from "./db";
 
+// Helper function to fetch data from Go backend
+async function fetchFromGoBackend<T>(endpoint: string): Promise<T> {
+  const goBackendUrl = process.env.GO_BACKEND_URL || "http://localhost:8081";
+  const url = `${goBackendUrl}${endpoint}`;
+  
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Go backend error: ${response.status} ${response.statusText}`);
+    }
+    return await response.json() as T;
+  } catch (error) {
+    console.error(`Failed to fetch from Go backend ${url}:`, error);
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: `Failed to connect to Go backend: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
+}
+
 // Mock data for virtual machines
 const mockVMs = [
   {
@@ -546,12 +566,15 @@ export const appRouter = router({
   vm: router({
     list: publicProcedure
       .input(z.object({ projectId: z.number().optional() }).optional())
-      .query(({ input }) => {
+      .query(async ({ input }) => {
+        // Start with mock data
         let vms = mockVMs;
         if (input?.projectId) {
           vms = mockVMs.filter(vm => vm.projectId === input.projectId);
         }
-        return vms.map(vm => ({
+        
+        // Transform mock data to frontend format
+        const mockVMList = vms.map(vm => ({
           id: vm.id,
           name: vm.name,
           status: vm.status,
@@ -564,11 +587,176 @@ export const appRouter = router({
           hasGpu: vm.gpus.length > 0,
           projectId: vm.projectId,
         }));
+
+        // Try to fetch real VMs from Go backend and merge
+        try {
+          const goVMs = await fetchFromGoBackend<Array<{
+            id: string;
+            name: string;
+            namespace: string;
+            status: string;
+            cpu: number;
+            memory: string;
+            nodeName: string;
+            ipAddress: string;
+            osImage: string;
+            createdAt: number;
+            hasGpu: boolean;
+            networks: Array<{ ipAddress: string }>;
+            gpus: Array<unknown>;
+          }>>("/api/vms");
+
+          // Transform Go backend format to frontend format
+          const goVMList = goVMs.map(vm => {
+            // Normalize status to match frontend expected values
+            let status: "Running" | "Stopped" | "Error" | "Pending" = "Pending";
+            const statusLower = (vm.status || "Unknown").toLowerCase();
+            if (statusLower === "running") {
+              status = "Running";
+            } else if (statusLower === "stopped") {
+              status = "Stopped";
+            } else if (statusLower === "error" || statusLower === "failed") {
+              status = "Error";
+            } else if (statusLower === "pending" || statusLower === "scheduling" || statusLower === "creating") {
+              status = "Pending";
+            }
+
+            return {
+              id: vm.id || vm.name,
+              name: vm.name,
+              status: status as "Running" | "Stopped" | "Error" | "Pending",
+              cpu: vm.cpu || 0,
+              memory: vm.memory || "0Gi",
+              nodeName: vm.nodeName || "",
+              ipAddress: vm.ipAddress || vm.networks?.[0]?.ipAddress || "",
+              osImage: vm.osImage || "",
+              createdAt: vm.createdAt || Date.now(),
+              hasGpu: vm.hasGpu || (vm.gpus?.length || 0) > 0,
+              projectId: input?.projectId || 1, // Default to project 1 if not specified
+            };
+          });
+
+          // Merge: combine mock and Go backend data, removing duplicates by id or name
+          const mergedVMs = [...mockVMList];
+          const existingIds = new Set(mockVMList.map(vm => vm.id));
+          const existingNames = new Set(mockVMList.map(vm => vm.name));
+
+          for (const goVM of goVMList) {
+            // Only add if not already exists (by id or name)
+            if (!existingIds.has(goVM.id) && !existingNames.has(goVM.name)) {
+              mergedVMs.push(goVM);
+              existingIds.add(goVM.id);
+              existingNames.add(goVM.name);
+            }
+          }
+
+          return mergedVMs;
+        } catch (error) {
+          console.error("Failed to fetch VMs from Go backend, using mock data only:", error);
+          // If Go backend fails, return mock data only
+          return mockVMList;
+        }
       }),
 
     get: publicProcedure
       .input(z.object({ id: z.string() }))
-      .query(({ input }) => {
+      .query(async ({ input }) => {
+        try {
+          // Try to fetch from Go backend by name (id might be UID, name is more reliable)
+          // First, get the list to find the VM by id or name
+          const goVMs = await fetchFromGoBackend<Array<{
+            id: string;
+            name: string;
+            namespace: string;
+            status: string;
+            cpu: number;
+            memory: string;
+            nodeName: string;
+            ipAddress: string;
+            osImage: string;
+            createdAt: number;
+            hasGpu: boolean;
+            networks: Array<{ name: string; interface: string; ipAddress: string; macAddress: string; mode: string }>;
+            disks: Array<{ name: string; size: string; storageClassName: string; boot: boolean; image?: string }>;
+            gpus: Array<{ name: string; deviceName: string }>;
+            metrics?: { cpuUsage: number; memoryUsage: number; diskUsage: number };
+          }>>("/api/vms");
+
+          // Find VM by id or name
+          const goVM = goVMs.find(v => v.id === input.id || v.name === input.id);
+          
+          if (goVM) {
+            // Transform to frontend format
+            return {
+              id: goVM.id || goVM.name,
+              name: goVM.name,
+              status: goVM.status || "Unknown",
+              cpu: goVM.cpu || 0,
+              memory: goVM.memory || "0Gi",
+              nodeName: goVM.nodeName || "",
+              createdAt: goVM.createdAt || Date.now(),
+              projectId: 1, // Default project
+              networks: goVM.networks || [],
+              disks: goVM.disks || [],
+              gpus: goVM.gpus || [],
+              osImage: goVM.osImage || "",
+              metrics: goVM.metrics || { cpuUsage: 0, memoryUsage: 0, diskUsage: 0 },
+              metricsHistory: {
+                cpu: generateMetricsHistory(goVM.metrics?.cpuUsage || 0),
+                memory: generateMetricsHistory(goVM.metrics?.memoryUsage || 0),
+                disk: generateMetricsHistory(goVM.metrics?.diskUsage || 0)
+              }
+            };
+          }
+
+          // If not found in Go backend, try to get by name directly
+          try {
+            const vmDetail = await fetchFromGoBackend<{
+              id: string;
+              name: string;
+              namespace: string;
+              status: string;
+              cpu: number;
+              memory: string;
+              nodeName: string;
+              ipAddress: string;
+              osImage: string;
+              createdAt: number;
+              hasGpu: boolean;
+              networks: Array<{ name: string; interface: string; ipAddress: string; macAddress: string; mode: string }>;
+              disks: Array<{ name: string; size: string; storageClassName: string; boot: boolean; image?: string }>;
+              gpus: Array<{ name: string; deviceName: string }>;
+              metrics?: { cpuUsage: number; memoryUsage: number; diskUsage: number };
+            }>(`/api/vms/${input.id}`);
+
+            return {
+              id: vmDetail.id || vmDetail.name,
+              name: vmDetail.name,
+              status: vmDetail.status || "Unknown",
+              cpu: vmDetail.cpu || 0,
+              memory: vmDetail.memory || "0Gi",
+              nodeName: vmDetail.nodeName || "",
+              createdAt: vmDetail.createdAt || Date.now(),
+              projectId: 1,
+              networks: vmDetail.networks || [],
+              disks: vmDetail.disks || [],
+              gpus: vmDetail.gpus || [],
+              osImage: vmDetail.osImage || "",
+              metrics: vmDetail.metrics || { cpuUsage: 0, memoryUsage: 0, diskUsage: 0 },
+              metricsHistory: {
+                cpu: generateMetricsHistory(vmDetail.metrics?.cpuUsage || 0),
+                memory: generateMetricsHistory(vmDetail.metrics?.memoryUsage || 0),
+                disk: generateMetricsHistory(vmDetail.metrics?.diskUsage || 0)
+              }
+            };
+          } catch {
+            // Fall through to mock data
+          }
+        } catch (error) {
+          console.error("Failed to fetch VM from Go backend, falling back to mock data:", error);
+        }
+
+        // Fallback to mock data
         const vm = mockVMs.find(v => v.id === input.id);
         if (!vm) return null;
         return {
@@ -690,26 +878,50 @@ export const appRouter = router({
 
     stats: publicProcedure
       .input(z.object({ projectId: z.number().optional() }).optional())
-      .query(({ input }) => {
-        let vms = mockVMs;
-        if (input?.projectId) {
-          vms = mockVMs.filter(vm => vm.projectId === input.projectId);
+      .query(async ({ input }) => {
+        try {
+          // Fetch stats from Go backend
+          const stats = await fetchFromGoBackend<{
+            total: number;
+            running: number;
+            stopped: number;
+            error: number;
+            pending: number;
+            totalCpu: number;
+            totalMemory: string;
+          }>("/api/vms/stats");
+
+          return stats;
+        } catch (fetchError) {
+          console.error("Failed to fetch stats from Go backend, falling back to mock data:", fetchError);
+          // Fallback to mock data
+          let vms = mockVMs;
+          if (input?.projectId) {
+            vms = mockVMs.filter(vm => vm.projectId === input.projectId);
+          }
+          const total = vms.length;
+          const running = vms.filter(vm => vm.status === "Running").length;
+          const stopped = vms.filter(vm => vm.status === "Stopped").length;
+          const errorCount = vms.filter(vm => vm.status === "Error").length;
+          const pending = vms.filter(vm => vm.status === "Pending").length;
+          const totalCpu = vms.reduce((sum, vm) => sum + vm.cpu, 0);
+          
+          // Calculate total memory (simplified)
+          const totalMemoryGi = vms.reduce((sum, vm) => {
+            const memStr = vm.memory.replace("Gi", "");
+            return sum + parseInt(memStr) || 0;
+          }, 0);
+
+          return {
+            total,
+            running,
+            stopped,
+            error: errorCount,
+            pending,
+            totalCpu,
+            totalMemory: `${totalMemoryGi}Gi`,
+          };
         }
-        const running = vms.filter(v => v.status === "Running").length;
-        const stopped = vms.filter(v => v.status === "Stopped").length;
-        const error = vms.filter(v => v.status === "Error").length;
-        const pending = vms.filter(v => v.status === "Pending").length;
-        const totalCpu = vms.reduce((sum, v) => sum + v.cpu, 0);
-        const totalMemory = vms.reduce((sum, v) => sum + parseInt(v.memory), 0);
-        return {
-          total: vms.length,
-          running,
-          stopped,
-          error,
-          pending,
-          totalCpu,
-          totalMemory: `${totalMemory}Gi`
-        };
       })
   }),
 

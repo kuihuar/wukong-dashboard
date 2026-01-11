@@ -125,6 +125,22 @@ VITE_ANALYTICS_WEBSITE_ID=""
 | `OWNER_NAME` | 所有者名稱 | `Admin` |
 | `OWNER_OPEN_ID` | 所有者 ID | `admin-user-1` |
 
+#### Go 後端配置（可選）
+
+| 變數 | 說明 | 默認值 | 示例 |
+|------|------|--------|------|
+| `GO_BACKEND_URL` | Go 後端服務 URL | `http://localhost:8081` | `http://localhost:8081` |
+
+**說明：**
+- Go 後端負責與 Kubernetes 集群通信，管理 Wukong 虛擬機
+- Node.js 服務器會將 `/api/vms/*`、`/api/snapshots/*`、`/api/ws` 請求代理到此 URL
+- 如果 Go 後端運行在不同主機或端口，需要設置此變量
+
+**示例：**
+- 本地開發: `http://localhost:8081`
+- Docker 容器: `http://wukong-backend:8081`
+- 生產環境: `https://api.wukong.example.com`
+
 #### Kubernetes 配置（可選）
 
 | 變數 | 說明 | 示例 |
@@ -132,6 +148,8 @@ VITE_ANALYTICS_WEBSITE_ID=""
 | `KUBERNETES_API_URL` | Kubernetes API 服務器 | `https://kubernetes-api:6443` |
 | `KUBERNETES_NAMESPACE` | Kubernetes 命名空間 | `wukong` |
 | `KUBECONFIG` | kubeconfig 文件路徑 | `/path/to/kubeconfig` |
+
+**注意：** Kubernetes 配置主要在 Go 後端使用，Go 後端會自動從環境變量或 kubeconfig 文件讀取配置。
 
 ## 🔧 開發環境配置
 
@@ -159,6 +177,9 @@ NODE_ENV="development"
 # 分析
 VITE_ANALYTICS_ENDPOINT="http://localhost:3001/api/send"
 VITE_ANALYTICS_WEBSITE_ID="dev-website-id"
+
+# Go 後端（Kubernetes API 代理）
+GO_BACKEND_URL="http://localhost:8081"
 
 # 所有者
 OWNER_NAME="Developer"
@@ -257,6 +278,9 @@ NODE_ENV="production"
 VITE_ANALYTICS_ENDPOINT="https://analytics.example.com/api/send"
 VITE_ANALYTICS_WEBSITE_ID="prod-website-id"
 
+# Go 後端（Kubernetes API 代理）
+GO_BACKEND_URL="https://api.wukong.example.com"
+
 # 所有者
 OWNER_NAME="Admin"
 OWNER_OPEN_ID="admin-prod-id"
@@ -339,7 +363,27 @@ docker ps | grep mysql
 pnpm dev
 ```
 
-### Q5: 如何在不同環境間切換？
+### Q5: Go 後端連接失敗
+
+**原因：** `GO_BACKEND_URL` 配置錯誤或 Go 後端未運行
+
+**解決方案：**
+```bash
+# 1. 檢查 Go 後端是否運行
+curl http://localhost:8081/health
+
+# 2. 如果未運行，啟動 Go 後端
+cd go-backend
+go run cmd/server/main.go
+
+# 3. 檢查 .env.local 中的 GO_BACKEND_URL
+cat .env.local | grep GO_BACKEND_URL
+
+# 4. 如果 Go 後端運行在不同端口，更新配置
+echo 'GO_BACKEND_URL="http://localhost:8081"' >> .env.local
+```
+
+### Q6: 如何在不同環境間切換？
 
 **方案 1：使用多個 .env 文件**
 ```bash
