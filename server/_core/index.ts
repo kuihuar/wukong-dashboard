@@ -1,18 +1,8 @@
 import dotenv from "dotenv";
-import express, { type Request, type Response } from "express";
-import { createServer } from "http";
-import net from "net";
 import path from "path";
 import { fileURLToPath } from "url";
-import { createProxyMiddleware } from "http-proxy-middleware";
-import type { Options } from "http-proxy-middleware";
-import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerOAuthRoutes } from "./oauth";
-import { appRouter } from "../routers";
-import { createContext } from "./context";
-import { serveStatic, setupVite } from "./vite";
 
-// Load environment variables
+// Load environment variables FIRST, before importing any other modules
 // Priority: .env.local > .env
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,6 +23,19 @@ const envResult = dotenv.config({ path: envPath });
 if (!envResult.error && process.env.NODE_ENV === "development") {
   console.log(`[Env] Loaded .env from ${envPath}`);
 }
+
+// Now import other modules after environment variables are loaded
+import express, { type Request, type Response } from "express";
+import { createServer } from "http";
+import net from "net";
+import { createProxyMiddleware } from "http-proxy-middleware";
+import type { Options } from "http-proxy-middleware";
+import { createExpressMiddleware } from "@trpc/server/adapters/express";
+import { registerOAuthRoutes } from "./oauth";
+import { registerOAuthServerRoutes } from "./oauthServerRoutes";
+import { appRouter } from "../routers";
+import { createContext } from "./context";
+import { serveStatic, setupVite } from "./vite";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -129,8 +132,12 @@ async function startServer() {
   } as Options;
   app.use("/api/ws", createProxyMiddleware(wsProxyOptions));
   
-  // OAuth callback under /api/oauth/callback
+  // OAuth callback under /api/oauth/callback (client receives callback from OAuth server)
   registerOAuthRoutes(app);
+  
+  // OAuth server routes (provides OAuth server functionality)
+  registerOAuthServerRoutes(app);
+  
   // tRPC API
   app.use(
     "/api/trpc",

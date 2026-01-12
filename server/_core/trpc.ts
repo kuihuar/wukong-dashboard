@@ -60,7 +60,6 @@ export const adminProcedure = t.procedure.use(
         throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
       }
     }
-
     return next({
       ctx: {
         ...ctx,

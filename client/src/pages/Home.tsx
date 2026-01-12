@@ -3,11 +3,45 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Server, Cpu, HardDrive, Activity, AlertCircle, CheckCircle2, Clock, XCircle, Plus, ArrowRight } from "lucide-react";
 import { useLocation } from "wouter";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { useEffect } from "react";
 
 export default function Home() {
   const [, setLocation] = useLocation();
-  const { data: stats, isLoading: statsLoading } = trpc.vm.stats.useQuery();
-  const { data: vms, isLoading: vmsLoading } = trpc.vm.list.useQuery();
+  const { user, loading } = useAuth();
+  
+  // All hooks must be called before any conditional returns
+  const { data: stats, isLoading: statsLoading } = trpc.vm.stats.useQuery(undefined, {
+    enabled: !loading && !!user, // Only fetch when authenticated
+  });
+  const { data: vms, isLoading: vmsLoading } = trpc.vm.list.useQuery(undefined, {
+    enabled: !loading && !!user, // Only fetch when authenticated
+  });
+
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    // Only redirect if loading is complete and user is definitely not logged in
+    if (!loading && user === null) {
+      setLocation('/login');
+    }
+  }, [user, loading, setLocation]);
+
+  // Show loading state
+  if (loading) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="h-8 w-8 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+          <p className="text-sm text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Redirect if not authenticated
+  if (!user) {
+    return null; // Will redirect via useEffect
+  }
 
   const recentVMs = vms?.slice(0, 4) || [];
 

@@ -42,18 +42,25 @@ import {
   Server,
 } from "lucide-react";
 import { useLocation } from "wouter";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { toast } from "sonner";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 export default function Snapshots() {
   const [, setLocation] = useLocation();
+  const { user, loading } = useAuth();
   const [searchQuery, setSearchQuery] = useState("");
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [selectedVM, setSelectedVM] = useState("");
   const [snapshotName, setSnapshotName] = useState("");
 
-  const { data: snapshots, isLoading, refetch } = trpc.snapshot.list.useQuery();
-  const { data: vms } = trpc.vm.list.useQuery();
+  // All hooks must be called before any conditional returns
+  const { data: snapshots, isLoading, refetch } = trpc.snapshot.list.useQuery(undefined, {
+    enabled: !loading && !!user, // Only fetch when authenticated
+  });
+  const { data: vms } = trpc.vm.list.useQuery(undefined, {
+    enabled: !loading && !!user, // Only fetch when authenticated
+  });
 
   const createMutation = trpc.snapshot.create.useMutation({
     onSuccess: (data) => {
@@ -86,6 +93,17 @@ export default function Snapshots() {
       toast.error(error.message);
     },
   });
+
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (!loading && !user) {
+      setLocation('/login');
+    }
+  }, [user, loading, setLocation]);
+
+  if (loading || !user) {
+    return null; // Will redirect
+  }
 
   const filteredSnapshots = snapshots?.filter(s =>
     s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||

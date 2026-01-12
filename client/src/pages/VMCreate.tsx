@@ -22,8 +22,9 @@ import {
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useLocation } from "wouter";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { toast } from "sonner";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 type Step = "basics" | "storage" | "network" | "gpu" | "review";
 
@@ -52,7 +53,19 @@ const storageClasses = [
 
 export default function VMCreate() {
   const [, setLocation] = useLocation();
+  const { user, loading } = useAuth();
   const [currentStep, setCurrentStep] = useState<Step>("basics");
+
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (!loading && !user) {
+      setLocation('/login');
+    }
+  }, [user, loading, setLocation]);
+
+  if (loading || !user) {
+    return null; // Will redirect
+  }
 
   // Form state
   const [name, setName] = useState("");

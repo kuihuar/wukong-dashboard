@@ -62,32 +62,11 @@ export default function DashboardLayout({
   }
 
   if (!user) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-background">
-        <div className="flex flex-col items-center gap-8 p-8 max-w-md w-full">
-          <div className="flex flex-col items-center gap-4">
-            <div className="h-16 w-16 rounded-2xl bg-primary/10 flex items-center justify-center">
-              <Server className="h-8 w-8 text-primary" />
-            </div>
-            <h1 className="text-2xl font-semibold tracking-tight text-center">
-              Wukong Dashboard
-            </h1>
-            <p className="text-sm text-muted-foreground text-center max-w-sm">
-              Sign in to manage your Kubernetes virtual machines with ease.
-            </p>
-          </div>
-          <Button
-            onClick={() => {
-              window.location.href = getLoginUrl();
-            }}
-            size="lg"
-            className="w-full shadow-lg hover:shadow-xl transition-all"
-          >
-            Sign in to continue
-          </Button>
-        </div>
-      </div>
-    );
+    // Redirect to login page instead of showing inline login
+    if (typeof window !== 'undefined') {
+      window.location.href = '/login';
+    }
+    return <DashboardLayoutSkeleton />;
   }
 
   return (

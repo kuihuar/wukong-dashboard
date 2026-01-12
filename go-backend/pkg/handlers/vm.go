@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"net/http"
+	"fmt"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/kuihuar/wukong-dashboard/go-backend/pkg/k8s"
@@ -33,7 +35,27 @@ func (h *VMHandler) ListVMs(c *gin.Context) {
 	var vms []*k8s.VMInfo
 	for _, w := range wukongs {
 		obj := &unstructured.Unstructured{Object: w}
-		vms = append(vms, k8s.ConvertWukongToVMInfo(obj))
+		vm := k8s.ConvertWukongToVMInfo(obj)
+		
+		// Get actual VM status from KubeVirt VM resource if vmName exists
+		status, _, _ := unstructured.NestedMap(w, "status")
+		if vmName, ok, _ := unstructured.NestedString(status, "vmName"); ok && vmName != "" {
+			actualStatus, err := h.client.GetVMStatus(ctx, vmName)
+			if err == nil && actualStatus != "" {
+				// Update status from actual VM resource
+				vm.Status = actualStatus
+			}
+			
+			// Get metrics if VM is running
+			if vm.Status == "Running" {
+				metrics, err := h.client.GetVMMetrics(ctx, vmName, vm.CPU, vm.Memory, obj)
+				if err == nil && metrics != nil {
+					vm.Metrics = metrics
+				}
+			}
+		}
+		
+		vms = append(vms, vm)
 	}
 
 	c.JSON(http.StatusOK, vms)
@@ -53,6 +75,25 @@ func (h *VMHandler) GetVM(c *gin.Context) {
 	}
 
 	vm := k8s.ConvertWukongToVMInfo(wukong)
+	
+	// Get actual VM status from KubeVirt VM resource if vmName exists
+	status, _, _ := unstructured.NestedMap(wukong.Object, "status")
+	if vmName, ok, _ := unstructured.NestedString(status, "vmName"); ok && vmName != "" {
+		actualStatus, err := h.client.GetVMStatus(ctx, vmName)
+		if err == nil && actualStatus != "" {
+			// Update status from actual VM resource
+			vm.Status = actualStatus
+		}
+		
+		// Get metrics if VM is running
+		if vm.Status == "Running" {
+			metrics, err := h.client.GetVMMetrics(ctx, vmName, vm.CPU, vm.Memory, wukong)
+			if err == nil && metrics != nil {
+				vm.Metrics = metrics
+			}
+		}
+	}
+	
 	c.JSON(http.StatusOK, vm)
 }
 
@@ -85,13 +126,49 @@ func (h *VMHandler) CreateVM(c *gin.Context) {
 		"memory":  req.Memory,
 		"osImage": req.OSImage,
 		"running": true,
+		// Add startStrategy to auto-start the VM
+		"startStrategy": map[string]interface{}{
+			"autoStart": true,
+		},
+		// Add cloudInitUser configuration (same as sample file)
+		"cloudInitUser": map[string]interface{}{
+			"groups": []string{"sudo", "adm", "dialout"},
+			"lockPasswd": false,
+			"name":       "ubuntu",
+			"passwordHash": "$1$7.t8q8zZ$59I1IiMXy5w3gIl5Yrn/4/",
+			"shell":      "/bin/bash",
+			"sudo":       "ALL=(ALL) NOPASSWD:ALL",
+		},
 	}
 
 	if len(req.Networks) > 0 {
 		spec["networks"] = req.Networks
+	} else {
+		// Add default network if no networks specified
+		spec["networks"] = []map[string]interface{}{
+			{
+				"name": "default",
+			},
+		}
 	}
 	if len(req.Disks) > 0 {
-		spec["disks"] = req.Disks
+		// Process disks: set fixed image URL for boot disk
+		const systemDiskImage = "http://192.168.1.141:8080/images/noble-server-cloudimg-amd64.img"
+		disks := make([]map[string]interface{}, len(req.Disks))
+		for i, disk := range req.Disks {
+			diskMap := make(map[string]interface{})
+			for k, v := range disk {
+				diskMap[k] = v
+			}
+			
+			// If this is a boot disk, always use the fixed system disk image
+			if boot, ok := disk["boot"].(bool); ok && boot {
+				diskMap["image"] = systemDiskImage
+			}
+			
+			disks[i] = diskMap
+		}
+		spec["disks"] = disks
 	}
 	if len(req.GPUs) > 0 {
 		spec["gpus"] = req.GPUs
@@ -193,6 +270,16 @@ func (h *VMHandler) GetVMStats(c *gin.Context) {
 		obj := &unstructured.Unstructured{Object: w}
 		vm := k8s.ConvertWukongToVMInfo(obj)
 
+		// Get actual VM status from KubeVirt VM resource if vmName exists
+		status, _, _ := unstructured.NestedMap(w, "status")
+		if vmName, ok, _ := unstructured.NestedString(status, "vmName"); ok && vmName != "" {
+			actualStatus, err := h.client.GetVMStatus(ctx, vmName)
+			if err == nil && actualStatus != "" {
+				// Update status from actual VM resource
+				vm.Status = actualStatus
+			}
+		}
+
 		stats.Total++
 		stats.TotalCPU += vm.CPU
 
@@ -209,19 +296,24 @@ func (h *VMHandler) GetVMStats(c *gin.Context) {
 		}
 		totalMemoryGi += memGi
 
-		switch vm.Status {
-		case "Running":
+		// Normalize status to match expected values
+		statusLower := strings.ToLower(vm.Status)
+		switch {
+		case statusLower == "running":
 			stats.Running++
-		case "Stopped":
+		case statusLower == "stopped":
 			stats.Stopped++
-		case "Error", "Failed":
+		case statusLower == "error" || statusLower == "failed":
 			stats.Error++
-		case "Pending", "Scheduling", "Creating":
+		case statusLower == "pending" || statusLower == "scheduling" || statusLower == "creating":
+			stats.Pending++
+		default:
+			// Unknown status, count as pending
 			stats.Pending++
 		}
 	}
 
-	stats.TotalMemory = string(rune(totalMemoryGi)) + "Gi"
+	stats.TotalMemory = fmt.Sprintf("%dGi", totalMemoryGi)
 
 	c.JSON(http.StatusOK, stats)
 }

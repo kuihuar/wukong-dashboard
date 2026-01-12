@@ -26,6 +26,8 @@ import {
 import { VNCConsole } from "@/components/VNCConsole";
 import { useLocation, useParams } from "wouter";
 import { toast } from "sonner";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { useEffect } from "react";
 import {
   LineChart,
   Line,
@@ -41,8 +43,18 @@ import {
 export default function VMDetail() {
   const { id } = useParams<{ id: string }>();
   const [, setLocation] = useLocation();
-  const { data: vm, isLoading, refetch } = trpc.vm.get.useQuery({ id: id || "" });
-  const { data: snapshots } = trpc.snapshot.listByVM.useQuery({ vmId: id || "" });
+  const { user, loading: authLoading } = useAuth();
+  
+  // All hooks must be called before any conditional returns
+  const { data: vm, isLoading, refetch } = trpc.vm.get.useQuery(
+    { id: id || "" },
+    { enabled: !authLoading && !!user && !!id } // Only fetch when authenticated and id exists
+  );
+  const { data: snapshots } = trpc.snapshot.listByVM.useQuery(
+    { vmId: id || "" },
+    { enabled: !authLoading && !!user && !!id } // Only fetch when authenticated and id exists
+  );
+  
   const actionMutation = trpc.vm.action.useMutation({
     onSuccess: (data) => {
       toast.success(data.message);
@@ -61,6 +73,17 @@ export default function VMDetail() {
       toast.error(error.message);
     },
   });
+
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (!authLoading && !user) {
+      setLocation('/login');
+    }
+  }, [user, authLoading, setLocation]);
+
+  if (authLoading || !user) {
+    return null; // Will redirect
+  }
 
   if (isLoading) {
     return (
@@ -209,52 +232,70 @@ export default function VMDetail() {
         </div>
       </div>
 
-      {/* Resource Overview */}
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card className="glass-card">
-          <CardContent className="pt-6">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <Cpu className="h-4 w-4 text-primary" />
-                <span className="font-medium">CPU Usage</span>
+      {/* Resource Overview - Only show metrics if VM is running */}
+      {vm.metrics && vm.status === "Running" ? (
+        <div className="grid gap-4 md:grid-cols-3">
+          <Card className="glass-card">
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <Cpu className="h-4 w-4 text-primary" />
+                  <span className="font-medium">CPU Usage</span>
+                </div>
+                <span className="text-2xl font-bold">{vm.metrics.cpuUsage}%</span>
               </div>
-              <span className="text-2xl font-bold">{vm.metrics.cpuUsage}%</span>
-            </div>
-            <Progress value={vm.metrics.cpuUsage} className="h-2" />
-            <p className="text-sm text-muted-foreground mt-2">{vm.cpu} vCPU allocated</p>
-          </CardContent>
-        </Card>
+              <Progress value={vm.metrics.cpuUsage} className="h-2" />
+              <p className="text-sm text-muted-foreground mt-2">{vm.cpu} vCPU allocated</p>
+            </CardContent>
+          </Card>
 
-        <Card className="glass-card">
-          <CardContent className="pt-6">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <HardDrive className="h-4 w-4 text-chart-2" />
-                <span className="font-medium">Memory Usage</span>
+          <Card className="glass-card">
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <HardDrive className="h-4 w-4 text-chart-2" />
+                  <span className="font-medium">Memory Usage</span>
+                </div>
+                <span className="text-2xl font-bold">{vm.metrics.memoryUsage}%</span>
               </div>
-              <span className="text-2xl font-bold">{vm.metrics.memoryUsage}%</span>
-            </div>
-            <Progress value={vm.metrics.memoryUsage} className="h-2" />
-            <p className="text-sm text-muted-foreground mt-2">{vm.memory} allocated</p>
-          </CardContent>
-        </Card>
+              <Progress value={vm.metrics.memoryUsage} className="h-2" />
+              <p className="text-sm text-muted-foreground mt-2">{vm.memory} allocated</p>
+            </CardContent>
+          </Card>
 
+          <Card className="glass-card">
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <Activity className="h-4 w-4 text-chart-3" />
+                  <span className="font-medium">Disk Usage</span>
+                </div>
+                <span className="text-2xl font-bold">{vm.metrics.diskUsage}%</span>
+              </div>
+              <Progress value={vm.metrics.diskUsage} className="h-2" />
+              <p className="text-sm text-muted-foreground mt-2">
+                {vm.disks.reduce((sum, d) => sum + parseInt(d.size), 0)}Gi total
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      ) : (
         <Card className="glass-card">
           <CardContent className="pt-6">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <Activity className="h-4 w-4 text-chart-3" />
-                <span className="font-medium">Disk Usage</span>
+            <div className="flex items-center justify-center py-8">
+              <div className="text-center">
+                <Activity className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                <p className="text-lg font-medium text-muted-foreground">
+                  Metrics are only available when the VM is running
+                </p>
+                <p className="text-sm text-muted-foreground mt-2">
+                  Start the VM to view CPU, Memory, and Disk usage
+                </p>
               </div>
-              <span className="text-2xl font-bold">{vm.metrics.diskUsage}%</span>
             </div>
-            <Progress value={vm.metrics.diskUsage} className="h-2" />
-            <p className="text-sm text-muted-foreground mt-2">
-              {vm.disks.reduce((sum, d) => sum + parseInt(d.size), 0)}Gi total
-            </p>
           </CardContent>
         </Card>
-      </div>
+      )}
 
       {/* Tabs */}
       <Tabs defaultValue="monitoring" className="space-y-4">

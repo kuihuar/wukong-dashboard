@@ -51,9 +51,9 @@ type GPUInfo struct {
 
 // MetricsInfo represents VM metrics
 type MetricsInfo struct {
-	CPUUsage    int `json:"cpuUsage"`
-	MemoryUsage int `json:"memoryUsage"`
-	DiskUsage   int `json:"diskUsage"`
+	CPUUsage    int `json:"cpuUsage"`    // Percentage (0-100)
+	MemoryUsage int `json:"memoryUsage"` // Percentage (0-100)
+	DiskUsage   int `json:"diskUsage"`   // Percentage (0-100)
 }
 
 // SnapshotInfo represents a simplified view of a WukongSnapshot

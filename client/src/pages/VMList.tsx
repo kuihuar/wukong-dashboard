@@ -38,11 +38,17 @@ import { useLocation } from "wouter";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { useVMListRealtime } from "@/hooks/useRealtimeUpdates";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 export default function VMList() {
   const [, setLocation] = useLocation();
   const [searchQuery, setSearchQuery] = useState("");
-  const { data: initialVMs, isLoading, refetch } = trpc.vm.list.useQuery();
+  const { user, loading } = useAuth();
+
+  // All hooks must be called before any conditional returns
+  const { data: initialVMs, isLoading, refetch } = trpc.vm.list.useQuery(undefined, {
+    enabled: !loading && !!user, // Only fetch when authenticated
+  });
   
   // Real-time updates via WebSocket
   const { vms: realtimeVMs, isConnected: wsConnected } = useVMListRealtime(initialVMs || []);
@@ -57,6 +63,17 @@ export default function VMList() {
       toast.error(error.message);
     },
   });
+  
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (!loading && !user) {
+      setLocation('/login');
+    }
+  }, [user, loading, setLocation]);
+
+  if (loading || !user) {
+    return null; // Will redirect
+  }
 
   const filteredVMs = vms?.filter(vm =>
     vm.name.toLowerCase().includes(searchQuery.toLowerCase()) ||

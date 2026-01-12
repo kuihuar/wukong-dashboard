@@ -14,10 +14,12 @@ import QuotaManagement from "./pages/QuotaManagement";
 import ProjectManagement from "./pages/ProjectManagement";
 import UserManagement from "./pages/UserManagement";
 import UserProfile from "./pages/UserProfile";
+import Login from "./pages/Login";
 
 function Router() {
   return (
     <Switch>
+      <Route path="/login" component={Login} />
       <Route path="/" component={Home} />
       <Route path="/vms" component={VMList} />
       <Route path="/vms/create" component={VMCreate} />

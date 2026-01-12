@@ -663,6 +663,8 @@ export const appRouter = router({
               createdAt: vm.createdAt || Date.now(),
               hasGpu: vm.hasGpu || (vm.gpus?.length || 0) > 0,
               projectId: input?.projectId || 1, // Default to project 1 if not specified
+              // Only include metrics if VM is running and metrics exist
+              ...(status === "Running" && vm.metrics ? { metrics: vm.metrics } : {}),
             };
           });
 
@@ -716,11 +718,27 @@ export const appRouter = router({
           const goVM = goVMs.find(v => v.id === input.id || v.name === input.id);
           
           if (goVM) {
+            // Normalize status
+            let status: "Running" | "Stopped" | "Error" | "Pending" = "Pending";
+            const statusLower = (goVM.status || "Unknown").toLowerCase();
+            if (statusLower === "running") {
+              status = "Running";
+            } else if (statusLower === "stopped") {
+              status = "Stopped";
+            } else if (statusLower === "error" || statusLower === "failed") {
+              status = "Error";
+            } else if (statusLower === "pending" || statusLower === "scheduling" || statusLower === "creating") {
+              status = "Pending";
+            }
+            
+            // Only include metrics if VM is running and metrics exist
+            const metrics = status === "Running" && goVM.metrics ? goVM.metrics : undefined;
+            
             // Transform to frontend format
             return {
               id: goVM.id || goVM.name,
               name: goVM.name,
-              status: goVM.status || "Unknown",
+              status: status,
               cpu: goVM.cpu || 0,
               memory: goVM.memory || "0Gi",
               nodeName: goVM.nodeName || "",
@@ -730,11 +748,11 @@ export const appRouter = router({
               disks: goVM.disks || [],
               gpus: goVM.gpus || [],
               osImage: goVM.osImage || "",
-              metrics: goVM.metrics || { cpuUsage: 0, memoryUsage: 0, diskUsage: 0 },
+              ...(metrics ? { metrics } : {}),
               metricsHistory: {
-                cpu: generateMetricsHistory(goVM.metrics?.cpuUsage || 0),
-                memory: generateMetricsHistory(goVM.metrics?.memoryUsage || 0),
-                disk: generateMetricsHistory(goVM.metrics?.diskUsage || 0)
+                cpu: generateMetricsHistory(metrics?.cpuUsage || 0),
+                memory: generateMetricsHistory(metrics?.memoryUsage || 0),
+                disk: generateMetricsHistory(metrics?.diskUsage || 0)
               }
             };
           }
@@ -759,10 +777,26 @@ export const appRouter = router({
               metrics?: { cpuUsage: number; memoryUsage: number; diskUsage: number };
             }>(`/api/vms/${input.id}`);
 
+            // Normalize status
+            let status: "Running" | "Stopped" | "Error" | "Pending" = "Pending";
+            const statusLower = (vmDetail.status || "Unknown").toLowerCase();
+            if (statusLower === "running") {
+              status = "Running";
+            } else if (statusLower === "stopped") {
+              status = "Stopped";
+            } else if (statusLower === "error" || statusLower === "failed") {
+              status = "Error";
+            } else if (statusLower === "pending" || statusLower === "scheduling" || statusLower === "creating") {
+              status = "Pending";
+            }
+            
+            // Only include metrics if VM is running and metrics exist
+            const metrics = status === "Running" && vmDetail.metrics ? vmDetail.metrics : undefined;
+            
             return {
               id: vmDetail.id || vmDetail.name,
               name: vmDetail.name,
-              status: vmDetail.status || "Unknown",
+              status: status,
               cpu: vmDetail.cpu || 0,
               memory: vmDetail.memory || "0Gi",
               nodeName: vmDetail.nodeName || "",
@@ -772,11 +806,11 @@ export const appRouter = router({
               disks: vmDetail.disks || [],
               gpus: vmDetail.gpus || [],
               osImage: vmDetail.osImage || "",
-              metrics: vmDetail.metrics || { cpuUsage: 0, memoryUsage: 0, diskUsage: 0 },
+              ...(metrics ? { metrics } : {}),
               metricsHistory: {
-                cpu: generateMetricsHistory(vmDetail.metrics?.cpuUsage || 0),
-                memory: generateMetricsHistory(vmDetail.metrics?.memoryUsage || 0),
-                disk: generateMetricsHistory(vmDetail.metrics?.diskUsage || 0)
+                cpu: generateMetricsHistory(metrics?.cpuUsage || 0),
+                memory: generateMetricsHistory(metrics?.memoryUsage || 0),
+                disk: generateMetricsHistory(metrics?.diskUsage || 0)
               }
             };
           } catch {
@@ -905,30 +939,30 @@ export const appRouter = router({
             name: string;
             message: string;
           }>(endpoint, goBackendRequest);
-
+          
           // Update quota usage after successful creation
           if (input.projectId) {
             const memoryGB = parseMemoryToGB(input.memory);
             const storageGB = input.disks.reduce((sum, d) => sum + parseStorageToGB(d.size), 0);
             const gpuCount = input.gpus?.length || 0;
             
-            const currentUsage = await db.getUsageByProjectId(input.projectId);
-            if (currentUsage) {
-              await db.updateResourceUsage(input.projectId, {
-                usedVMs: currentUsage.usedVMs + 1,
-                usedCPU: currentUsage.usedCPU + input.cpu,
-                usedMemoryGB: currentUsage.usedMemoryGB + memoryGB,
-                usedStorageGB: currentUsage.usedStorageGB + storageGB,
-                usedGPUs: currentUsage.usedGPUs + gpuCount,
-              });
-            }
+          const currentUsage = await db.getUsageByProjectId(input.projectId);
+          if (currentUsage) {
+            await db.updateResourceUsage(input.projectId, {
+              usedVMs: currentUsage.usedVMs + 1,
+              usedCPU: currentUsage.usedCPU + input.cpu,
+              usedMemoryGB: currentUsage.usedMemoryGB + memoryGB,
+              usedStorageGB: currentUsage.usedStorageGB + storageGB,
+              usedGPUs: currentUsage.usedGPUs + gpuCount,
+            });
           }
-
-          return {
+        }
+        
+        return {
             success: result.success,
             id: result.id || result.name,
             message: result.message || `Virtual machine "${input.name}" created successfully`,
-          };
+        };
         } catch (error) {
           // If Go backend fails, throw the error (don't create mock VM)
           throw error;
@@ -992,10 +1026,10 @@ export const appRouter = router({
         } catch (fetchError) {
           console.error("Failed to fetch stats from Go backend, falling back to mock data:", fetchError);
           // Fallback to mock data
-          let vms = mockVMs;
-          if (input?.projectId) {
-            vms = mockVMs.filter(vm => vm.projectId === input.projectId);
-          }
+        let vms = mockVMs;
+        if (input?.projectId) {
+          vms = mockVMs.filter(vm => vm.projectId === input.projectId);
+        }
           const total = vms.length;
           const running = vms.filter(vm => vm.status === "Running").length;
           const stopped = vms.filter(vm => vm.status === "Stopped").length;
@@ -1009,15 +1043,15 @@ export const appRouter = router({
             return sum + parseInt(memStr) || 0;
           }, 0);
 
-          return {
+        return {
             total,
-            running,
-            stopped,
+          running,
+          stopped,
             error: errorCount,
-            pending,
-            totalCpu,
+          pending,
+          totalCpu,
             totalMemory: `${totalMemoryGi}Gi`,
-          };
+        };
         }
       })
   }),
